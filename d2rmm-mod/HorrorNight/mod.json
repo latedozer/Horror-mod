@@ -1,0 +1,147 @@
+{
+  "name": "Horror Night",
+  "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horror Night plugin) phantom monsters, lightning and thunder.",
+  "author": "Latedozer",
+  "version": "2.0",
+  "config": [
+    {
+      "id": "alwaysNight",
+      "type": "checkbox",
+      "name": "Always night",
+      "description": "Every time of day uses the night lighting.",
+      "defaultValue": true
+    },
+    {
+      "id": "alwaysWeather",
+      "type": "checkbox",
+      "name": "Overlay rain / snow (not needed with the plugin)",
+      "description": "A visual-only rain and snow overlay. The Horror Night plugin now drives the game's real weather instead, so leave this off unless you run without the plugin.",
+      "defaultValue": false
+    },
+    {
+      "id": "darkness",
+      "type": "number",
+      "name": "Darkness %",
+      "description": "How much ambient light to remove on top of vanilla night (0 = vanilla night, 95 = near pitch black).",
+      "defaultValue": 60,
+      "minValue": 0,
+      "maxValue": 95
+    },
+    {
+      "id": "keyLightCap",
+      "type": "number",
+      "name": "Moonlight cap",
+      "description": "Upper limit for the main sky light. Vanilla Act 1 night is 4.5; lower is darker.",
+      "defaultValue": 2,
+      "minValue": 0,
+      "maxValue": 50
+    },
+    {
+      "id": "monsterVisibility",
+      "type": "number",
+      "name": "Monster visibility %",
+      "description": "Monsters have their own fill light that shows them even in the dark. Lower this to hide them until they enter your light.",
+      "defaultValue": 35,
+      "minValue": 0,
+      "maxValue": 100
+    },
+    {
+      "id": "lightRadiusScale",
+      "type": "number",
+      "name": "Light radius reach %",
+      "description": "Reach of the light around your character (100 = vanilla). Lower means you see less around you.",
+      "defaultValue": 65,
+      "minValue": 25,
+      "maxValue": 200
+    },
+    {
+      "id": "gentleTowns",
+      "type": "checkbox",
+      "name": "Gentler towns",
+      "description": "Acts 2-5 towns lose at most 20% of their light. (The Rogue Encampment shares the Act 1 outdoor lighting and cannot be separated.)",
+      "defaultValue": false
+    },
+    {
+      "id": "phantoms",
+      "type": "checkbox",
+      "name": "Phantom monsters (needs the Horror Night plugin)",
+      "description": "Adds the false-monster rows that the d2rl-horror-night plugin spawns: unkillable, they drain life without killing, and vanish after a random time. Timing and strength are set in the plugin's horror-night.toml.",
+      "defaultValue": true
+    },
+    {
+      "id": "lightning",
+      "type": "checkbox",
+      "name": "Lightning bolts (needs the Horror Night plugin)",
+      "description": "Adds the harmless lightning bolt the plugin drops near you during storms. It lights up the area around it for a moment.",
+      "defaultValue": true
+    },
+    {
+      "id": "lightningLight",
+      "type": "number",
+      "name": "Lightning light radius",
+      "description": "How far each bolt lights up the dark (vanilla Thunder Storm bolt: 10). Raise it for a wider flash.",
+      "defaultValue": 60,
+      "minValue": 5,
+      "maxValue": 200
+    },
+    {
+      "id": "skyFlash",
+      "type": "checkbox",
+      "name": "Lightning lights the whole sky (needs the Horror Night plugin)",
+      "description": "Turns the unused daytime lighting of stormy outdoor areas into the lit-by-lightning look that the plugin flashes for a split second. Only with Always night on. Turn this off if you remove the plugin, or daytime will look like a permanent flash.",
+      "defaultValue": true
+    },
+    {
+      "id": "flashBrightness",
+      "type": "number",
+      "name": "Flash brightness",
+      "description": "Strength of the sky light at the peak of a flash (vanilla daylight is 13.5).",
+      "defaultValue": 45,
+      "minValue": 5,
+      "maxValue": 300
+    },
+    {
+      "id": "flashAmbient",
+      "type": "number",
+      "name": "Flash ambient %",
+      "description": "Ambient light at the peak of a flash (vanilla daylight is 40).",
+      "defaultValue": 120,
+      "minValue": 0,
+      "maxValue": 500
+    },
+    {
+      "id": "fogAmount",
+      "type": "number",
+      "name": "Fog thickness %",
+      "description": "Adds dark distance fog and a low ground fog everywhere (0 = vanilla fog only).",
+      "defaultValue": 75,
+      "minValue": 0,
+      "maxValue": 100
+    },
+    {
+      "id": "townsfolk",
+      "type": "checkbox",
+      "name": "Townsfolk among the dead (needs the plugin)",
+      "description": "Some undead phantoms carry the name of someone from that act's town. When one appears the plugin starts a haunting: your life orb reads 1 and nearby corpses get back up.",
+      "defaultValue": true
+    },
+    {
+      "id": "musicVolume",
+      "type": "number",
+      "name": "Music volume %",
+      "description": "100 = vanilla. Lower lets the ambience carry the mood.",
+      "defaultValue": 55,
+      "minValue": 0,
+      "maxValue": 100
+    },
+    {
+      "id": "ambientVolume",
+      "type": "number",
+      "name": "Ambient volume %",
+      "description": "Volume of the world's own ambient loops and noises (100 = vanilla).",
+      "defaultValue": 135,
+      "minValue": 0,
+      "maxValue": 200
+    }
+  ]
+}

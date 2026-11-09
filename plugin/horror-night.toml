@@ -1,0 +1,86 @@
+# Horror Night plugin. Close the game before editing; changes apply on the next start.
+# Every setting can also be changed in game with I Hate TOMLs.
+# Console (Ctrl + `): "horror status", "horror spawn", "horror strike", "horror haunt".
+
+[phantoms]
+# False monsters: they cannot be killed, their hits drain life but never kill,
+# and they vanish after a random time.
+enabled = true
+# Seconds between appearances (random between the two).
+min_interval = 40
+max_interval = 140
+# Seconds a phantom stays before it vanishes (random between the two).
+min_life = 4
+max_life = 10
+# Most phantoms alive at once, and most that appear together.
+max_alive = 3
+max_group = 2
+# Each hit removes this percent of your CURRENT life (1-50). It can never kill.
+drain_percent = 10
+# How far from you they appear, in game tiles.
+min_distance = 10
+max_distance = 18
+
+[haunting]
+# Now and then the phantom that appears is one of the dead wearing a townsperson's name.
+# While it is there: corpses near you get back up, and your life orb reads 1.
+# Percent of phantom appearances that are a haunting (0 = never).
+chance = 5
+# Most corpses that get back up.
+corpses = 4
+# Show 1 life on the orb during a haunting (your real life is untouched).
+false_health = true
+
+[weather]
+# Drive the game's own rain (Acts 1 and 3) and snow (Act 5) so it always falls outdoors.
+enabled = true
+# How heavy, 5-100.
+intensity = 100
+
+[sounds]
+# Breathing, moans, distant screams and ravens (three calls) at random moments outside town.
+enabled = true
+# Seconds between them (random between the two).
+min_interval = 70
+max_interval = 200
+# Loudness, 0-300 (100 = as recorded).
+volume = 60
+
+[storm]
+# Lightning flashes and thunder in the rainy outdoor areas (Acts 1 and 3).
+enabled = true
+# Seconds between lightning strikes (random between the two).
+min_interval = 15
+max_interval = 70
+# Drop a harmless lightning bolt near you on outdoor strikes; it lights up the area.
+lightning_bolts = true
+# Which missiles.txt row to use for the bolt. -1 = the mod's own bolt.
+bolt_row = -1
+# A strike flickers several times (random between the two)...
+hits_min = 3
+hits_max = 3
+# ...and each flicker drops this many bolts around you.
+bolts_per_hit = 1
+# Farthest a bolt lands from you, in tiles.
+bolt_spread = 16
+# Nearest a normal bolt lands from you, in tiles.
+bolt_min_distance = 7
+# Percent of strikes that land right on you.
+direct_hit_chance = 6
+# A direct hit removes a random percent of your MAXIMUM life between these two.
+# It always leaves at least 1 life.
+direct_hit_damage_min = 5
+direct_hit_damage_max = 10
+# Light up the whole scene on a strike (needs the mod's "Lightning lights the whole sky" option).
+# While this is on the plugin also holds the game on night.
+sky_flash = true
+# Peak brightness of that flash, 0-100.
+sky_flash_strength = 100
+# Also flash the whole screen white (needs a working D2RLoader overlay; covers the UI too).
+screen_flash = false
+# Thunder loudness. 100 is full strength; up to 300 pushes it louder still.
+volume = 100
+# Also storm in the snowy Act 5 outdoor areas.
+snow_areas = true
+# Muffled thunder (no flash) while underground in Acts 1 and 3.
+indoor_thunder = true
