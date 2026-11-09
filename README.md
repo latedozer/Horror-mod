@@ -95,6 +95,10 @@ Engine addresses and structures were found with help from
 
 `<game>/mods/<mod>/d2rloader/logs/horror-night.log` says which parts are on, and why any are off.
 
+## License
+
+GPL-3.0 (see `LICENSE`). This covers the code and data in this repository only.
+
 ## Credits
 
 Made by Latedozer.
