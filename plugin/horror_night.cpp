@@ -2377,7 +2377,7 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
 	.name        = "Horror Night",
-	.version     = "2.0.0",
+	.version     = "1.0.0",
 	.author      = "Latedozer",
 	.description = "Phantom monsters that cannot be killed and vanish on a timer, plus lightning and thunder.",
 	.flags       = D2RL::PluginFlags::Shared | D2RL::PluginFlags::NativeHooks,

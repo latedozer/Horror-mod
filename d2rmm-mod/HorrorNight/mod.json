@@ -2,7 +2,7 @@
   "name": "Horror Night",
   "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horror Night plugin) phantom monsters, lightning and thunder.",
   "author": "Latedozer",
-  "version": "2.0",
+  "version": "1.0",
   "config": [
     {
       "id": "alwaysNight",
