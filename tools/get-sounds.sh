@@ -5,10 +5,12 @@
 #
 # Linux: needs wine (with winegcc), ffmpeg, and CascLib.dll (D2RMM ships one in its
 # tools folder).
-#   ./get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll"
+#   ./get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll" [output folder]
+# Writes a horror-night-sounds folder (default: next to this repo's plugin folder). Copy it to
+# <game>/mods/<mod>/d2rloader/horror-night-sounds/ - the plugin reads the sounds from there.
 set -e
-GAME="$1"; CASCLIB="$2"
-[ -d "$GAME" ] && [ -f "$CASCLIB" ] || { echo "usage: $0 <game folder> <CascLib.dll>"; exit 1; }
+GAME="$1"; CASCLIB="$2"; OUT="$3"
+[ -d "$GAME" ] && [ -f "$CASCLIB" ] || { echo "usage: $0 <game folder> <CascLib.dll> [output folder]"; exit 1; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d)"; export WINEPREFIX="$WORK/prefix" WINEDEBUG=-all
 cp "$CASCLIB" "$WORK/CascLib.dll"
@@ -21,7 +23,7 @@ WINGAME="Z:$(echo "$GAME" | sed 's|/|\\|g')"; WINOUT="Z:$(echo "$WORK/out" | sed
   echo "data:data\\global\\sfx\\monster\\diablo\\laugh1.flac"
 } > "$WORK/names.txt"
 ( cd "$WORK" && wine ./cx.exe.so CascLib.dll "$WINGAME" get "$WINOUT" < names.txt )
-RES="$HERE/../plugin/res"; mkdir -p "$RES/amb"
+RES="${OUT:-$HERE/../horror-night-sounds}"; mkdir -p "$RES/amb"; RES="$(cd "$RES" && pwd)"
 i=1
 for n in 1 2 3 4; do
   ffmpeg -v error -y -i "$WORK/out/data/hd/global/sfx/ambient/event/thunder_norm_${n}_hd.flac" -ac 1 -ar 32000 \
@@ -34,4 +36,4 @@ done
 ffmpeg -v error -y -i "$WORK/out/data/global/sfx/monster/diablo/laugh1.flac" -ac 1 -ar 22050 -t 9 \
   -af "volume=3dB,alimiter=limit=0.95:level=false" -c:a pcm_s16le -bitexact "$RES/amb/a$i.wav"
 rm -rf "$WORK"
-echo "Sounds written to $RES"
+echo "Sounds written to $RES - copy that folder to <game>/mods/<mod>/d2rloader/horror-night-sounds/"

@@ -1562,15 +1562,47 @@ Area StormArea(int level) {
 	return Area::None;
 }
 
-bool LoadClip(int resourceId, Clip* clip) {
-	HRSRC resource = FindResourceA(g_module, MAKEINTRESOURCEA(resourceId), MAKEINTRESOURCEA(10) /* RT_RCDATA */);
-	if (resource == nullptr) {
+// The sounds are the game's own (Blizzard's), so they are not built into the DLL: they are read from
+// <mod>\d2rloader\horror-night-sounds\ (thunder1-4.wav, amb\a1-a19.wav), which
+// tools/get-sounds.sh makes from the player's own install. A missing file just stays silent.
+wchar_t g_soundDir[1024] = {};
+
+bool FindSoundDir() {
+	const DWORD length = GetModuleFileNameW(g_module, g_soundDir, 900);
+	if (length == 0 || length >= 900) {
 		return false;
 	}
-	HGLOBAL        handle = LoadResource(g_module, resource);
-	const uint8_t* data   = handle != nullptr ? static_cast<const uint8_t*>(LockResource(handle)) : nullptr;
-	const uint32_t size   = SizeofResource(g_module, resource);
-	if (data == nullptr || size < 44 || memcmp(data, "RIFF", 4) != 0) {
+	// ...\mods\<mod>\d2rloader\plugins\<dll>  ->  ...\mods\<mod>\d2rloader
+	for (int cut = 0; cut < 2; ++cut) {
+		wchar_t* slash = wcsrchr(g_soundDir, L'\\');
+		if (slash == nullptr) {
+			return false;
+		}
+		*slash = L'\0';
+	}
+	wcscat(g_soundDir, L"\\horror-night-sounds");
+	return true;
+}
+
+bool LoadClip(const wchar_t* name, Clip* clip) {
+	wchar_t file[1200] = {};
+	swprintf(file, 1200, L"%ls\\%ls", g_soundDir, name);
+	HANDLE handle = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	if (handle == INVALID_HANDLE_VALUE) {
+		return false;
+	}
+	LARGE_INTEGER fileSize {};
+	if (!GetFileSizeEx(handle, &fileSize) || fileSize.QuadPart < 44 || fileSize.QuadPart > 64 * 1024 * 1024) {
+		CloseHandle(handle);
+		return false;
+	}
+	const uint32_t size = static_cast<uint32_t>(fileSize.QuadPart);
+	uint8_t*       data = static_cast<uint8_t*>(malloc(size)); // kept for the life of the process
+	DWORD          read = 0;
+	const BOOL     ok   = data != nullptr && ReadFile(handle, data, size, &read, nullptr) && read == size;
+	CloseHandle(handle);
+	if (!ok || memcmp(data, "RIFF", 4) != 0) {
+		free(data);
 		return false;
 	}
 	uint32_t offset = 12;
@@ -1588,6 +1620,7 @@ bool LoadClip(int resourceId, Clip* clip) {
 		}
 		offset += 8 + chunkSize + (chunkSize & 1U);
 	}
+	free(data);
 	return false;
 }
 
@@ -1619,11 +1652,19 @@ void BuildHeartbeat() {
 
 int LoadSounds() {
 	int loaded = 0;
-	for (int i = 0; i < kThunderCount; ++i) {
-		loaded += LoadClip(2001 + i, &g_thunder[i]) ? 1 : 0;
+	if (FindSoundDir()) {
+		wchar_t name[32];
+		for (int i = 0; i < kThunderCount; ++i) {
+			swprintf(name, 32, L"thunder%d.wav", i + 1);
+			loaded += LoadClip(name, &g_thunder[i]) ? 1 : 0;
+		}
+		for (int i = 0; i < kAmbientCount; ++i) {
+			swprintf(name, 32, L"amb\\a%d.wav", i + 1);
+			loaded += LoadClip(name, &g_ambient[i]) ? 1 : 0;
+		}
 	}
-	for (int i = 0; i < kAmbientCount; ++i) {
-		loaded += LoadClip(2101 + i, &g_ambient[i]) ? 1 : 0;
+	if (loaded < kThunderCount + kAmbientCount) {
+		Log("sounds: %d of %d sound files found in %ls (run tools/get-sounds.sh and copy its output there)", loaded, kThunderCount + kAmbientCount, g_soundDir);
 	}
 	BuildHeartbeat();
 	return loaded;
@@ -2336,7 +2377,7 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
 	.name        = "Horror Night",
-	.version     = "1.0.0",
+	.version     = "1.1.0",
 	.author      = "Latedozer",
 	.description = "Phantom monsters that cannot be killed and vanish on a timer, plus lightning and thunder.",
 	.flags       = D2RL::PluginFlags::Shared | D2RL::PluginFlags::NativeHooks,

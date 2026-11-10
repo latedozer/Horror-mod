@@ -43,9 +43,14 @@ and the whispers need the plugin as well.
 
 1. Install [D2RLoader](https://github.com/D2RLoader/PluginSDK) and D2RMM.
 2. Copy `d2rmm-mod/HorrorNight` into D2RMM's `mods` folder, enable it, and click **Install**.
-3. Build the plugin (below) and put `d2rl-horror-night.dll` in
+3. Download `d2rl-horror-night.dll` from the
+   [latest release](https://github.com/latedozer/Horror-mod/releases/latest) (or build it, below) and put it in
    `<game>/mods/<your D2RMM mod name>/d2rloader/plugins/`.
-4. Start the game twice the first time (D2RLoader builds its table cache on the first start).
+4. Make the sounds from your own game (they are Blizzard's, so neither the repo nor the DLL has them):
+   `tools/get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll"`, then copy
+   the `horror-night-sounds` folder it writes to `<game>/mods/<mod>/d2rloader/horror-night-sounds/`.
+   Without it everything works, just without thunder and whispers (the heartbeat is synthesised).
+5. Start the game twice the first time (D2RLoader builds its table cache on the first start).
 
 Settings:
 - Data-side (darkness, fog, light radius, volumes, flash look): D2RMM's settings for the mod, then
@@ -61,8 +66,10 @@ otherwise the stormy areas' unused daylight profile shows as a blinding daytime.
 
 ## Build the plugin
 
-The plugin embeds thunder and ambient sounds from the game. Those files belong to Blizzard and are not
-in this repository: `tools/get-sounds.sh` pulls them from your own installed copy.
+The plugin plays thunder and ambient sounds from the game. Those files belong to Blizzard, so they are
+neither in this repository nor built into the DLL: the plugin reads them at start-up from
+`<mod>/d2rloader/horror-night-sounds/` (`thunder1-4.wav`, `amb/a1-a19.wav`), and `tools/get-sounds.sh`
+makes them from your own installed copy.
 
 Linux (what it was developed on):
 
@@ -70,9 +77,7 @@ Linux (what it was developed on):
 # 1. tools: mingw-w64 (pacman -S mingw-w64-gcc), wine with winegcc, ffmpeg
 # 2. the D2RLoader Plugin SDK headers
 git clone https://github.com/D2RLoader/PluginSDK ../PluginSDK
-# 3. the sounds, from your game install (CascLib.dll ships with D2RMM in its tools folder)
-tools/get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll"
-# 4. build
+# 3. build
 SDK=../PluginSDK/include plugin/build.sh
 ```
 
