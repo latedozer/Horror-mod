@@ -11,6 +11,7 @@
 #include <D2RLPlugin/lifecycle_events.h>
 #include <D2RLPlugin/overlay.h>
 #include <D2RLPlugin/threads.h>
+#include "game_sounds.h"
 
 #include <windows.h>
 #include <mmsystem.h>
@@ -1562,68 +1563,6 @@ Area StormArea(int level) {
 	return Area::None;
 }
 
-// The sounds are the game's own (Blizzard's), so they are not built into the DLL: they are read from
-// <mod>\d2rloader\horror-night-sounds\ (thunder1-4.wav, amb\a1-a19.wav), which
-// tools/get-sounds.sh makes from the player's own install. A missing file just stays silent.
-wchar_t g_soundDir[1024] = {};
-
-bool FindSoundDir() {
-	const DWORD length = GetModuleFileNameW(g_module, g_soundDir, 900);
-	if (length == 0 || length >= 900) {
-		return false;
-	}
-	// ...\mods\<mod>\d2rloader\plugins\<dll>  ->  ...\mods\<mod>\d2rloader
-	for (int cut = 0; cut < 2; ++cut) {
-		wchar_t* slash = wcsrchr(g_soundDir, L'\\');
-		if (slash == nullptr) {
-			return false;
-		}
-		*slash = L'\0';
-	}
-	wcscat(g_soundDir, L"\\horror-night-sounds");
-	return true;
-}
-
-bool LoadClip(const wchar_t* name, Clip* clip) {
-	wchar_t file[1200] = {};
-	swprintf(file, 1200, L"%ls\\%ls", g_soundDir, name);
-	HANDLE handle = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-	if (handle == INVALID_HANDLE_VALUE) {
-		return false;
-	}
-	LARGE_INTEGER fileSize {};
-	if (!GetFileSizeEx(handle, &fileSize) || fileSize.QuadPart < 44 || fileSize.QuadPart > 64 * 1024 * 1024) {
-		CloseHandle(handle);
-		return false;
-	}
-	const uint32_t size = static_cast<uint32_t>(fileSize.QuadPart);
-	uint8_t*       data = static_cast<uint8_t*>(malloc(size)); // kept for the life of the process
-	DWORD          read = 0;
-	const BOOL     ok   = data != nullptr && ReadFile(handle, data, size, &read, nullptr) && read == size;
-	CloseHandle(handle);
-	if (!ok || memcmp(data, "RIFF", 4) != 0) {
-		free(data);
-		return false;
-	}
-	uint32_t offset = 12;
-	while (offset + 8 <= size) {
-		uint32_t chunkSize = 0;
-		memcpy(&chunkSize, data + offset + 4, 4);
-		if (memcmp(data + offset, "fmt ", 4) == 0 && offset + 16 <= size) {
-			memcpy(&clip->rate, data + offset + 12, 4);
-		} else if (memcmp(data + offset, "data", 4) == 0) {
-			const uint32_t start = offset + 8;
-			const uint32_t bytes = chunkSize <= size - start ? chunkSize : size - start;
-			clip->samples        = reinterpret_cast<const int16_t*>(data + start);
-			clip->count          = bytes / 2;
-			return clip->count > 0;
-		}
-		offset += 8 + chunkSize + (chunkSize & 1U);
-	}
-	free(data);
-	return false;
-}
-
 // lub-dub: two thumps with enough overtone to be heard on small speakers
 void BuildHeartbeat() {
 	constexpr uint32_t kRate  = 22050;
@@ -1650,21 +1589,73 @@ void BuildHeartbeat() {
 	g_heartbeatClip.rate    = kRate;
 }
 
-int LoadSounds() {
-	int loaded = 0;
-	if (FindSoundDir()) {
-		wchar_t name[32];
-		for (int i = 0; i < kThunderCount; ++i) {
-			swprintf(name, 32, L"thunder%d.wav", i + 1);
-			loaded += LoadClip(name, &g_thunder[i]) ? 1 : 0;
-		}
-		for (int i = 0; i < kAmbientCount; ++i) {
-			swprintf(name, 32, L"amb\\a%d.wav", i + 1);
-			loaded += LoadClip(name, &g_ambient[i]) ? 1 : 0;
+// The sounds are the game's own (Blizzard's), so the DLL does not carry them: they are read out of
+// the installed game's data at start-up (see game_sounds.cpp).
+const char* const kAmbientNames[kAmbientCount] = { "breath1", "breath3", "breath6", "breath8", "moan1", "moan2", "moan3", "moan4", "moan5", "moan6",
+	"moan7", "moan8", "scream1", "scream3", "scream5", "scream7", "raven1", "raven3", nullptr /* Diablo's laugh */ };
+
+bool LoadGameClip(void* storage, const char* name, const SoundProcess& process, Clip* clip) {
+	uint32_t       count   = 0;
+	const int16_t* samples = LoadGameSound(storage, name, process, &count);
+	if (samples == nullptr) {
+		Log("sounds: could not read %s from the game data", name);
+		return false;
+	}
+	clip->samples = samples; // kept for the life of the process
+	clip->count   = count;
+	clip->rate    = process.outRate;
+	return true;
+}
+
+// The game folder: next to the running executable, or else five folders above this DLL
+// (<game>\mods\<mod>\d2rloader\plugins\<dll>).
+void* OpenStorage() {
+	char  error[700] = {};
+	void* storage    = OpenGameStorage(nullptr, error, sizeof(error));
+	if (storage != nullptr) {
+		return storage;
+	}
+	wchar_t     path[1024] = {};
+	const DWORD length     = GetModuleFileNameW(g_module, path, 1000);
+	bool        found      = length > 0 && length < 1000;
+	for (int cut = 0; found && cut < 5; ++cut) {
+		wchar_t* slash = wcsrchr(path, L'\\');
+		found          = slash != nullptr;
+		if (found) {
+			*slash = L'\0';
 		}
 	}
-	if (loaded < kThunderCount + kAmbientCount) {
-		Log("sounds: %d of %d sound files found in %ls (run tools/get-sounds.sh and copy its output there)", loaded, kThunderCount + kAmbientCount, g_soundDir);
+	char second[700] = {};
+	storage          = found ? OpenGameStorage(path, second, sizeof(second)) : nullptr;
+	if (storage == nullptr) {
+		Log("sounds: %s%s%s - no thunder or whispers", error, found ? "; " : "", second);
+	}
+	return storage;
+}
+
+int LoadSounds() {
+	int            loaded  = 0;
+	const uint64_t started = GetTickCount64();
+	if (void* storage = OpenStorage()) {
+		// the same processing the sounds always had: thunder gets a bass lift and is pushed into a limiter
+		const SoundProcess thunder { 32000, 4.0f, 90.0f, 12.0f, 0.95f, 3.0f, 120.0f, 0.0f };
+		const SoundProcess ambient { 22050, 0.0f, 0.0f, 3.0f, 0.95f, 5.0f, 50.0f, 9.0f };
+		char               name[160];
+		for (int i = 0; i < kThunderCount; ++i) {
+			snprintf(name, sizeof(name), "data:data\\hd\\global\\sfx\\ambient\\event\\thunder_norm_%d_hd.flac", i + 1);
+			loaded += LoadGameClip(storage, name, thunder, &g_thunder[i]) ? 1 : 0;
+		}
+		for (int i = 0; i < kAmbientCount; ++i) {
+			if (kAmbientNames[i] != nullptr) {
+				snprintf(name, sizeof(name), "data:data\\global\\sfx\\ambient\\event\\%s.flac", kAmbientNames[i]);
+			} else {
+				snprintf(name, sizeof(name), "data:data\\global\\sfx\\monster\\diablo\\laugh1.flac");
+			}
+			loaded += LoadGameClip(storage, name, ambient, &g_ambient[i]) ? 1 : 0;
+		}
+		CloseGameStorage(storage);
+		Log("sounds: %d of %d read from the game data in %llu ms", loaded, kThunderCount + kAmbientCount,
+			static_cast<unsigned long long>(GetTickCount64() - started));
 	}
 	BuildHeartbeat();
 	return loaded;

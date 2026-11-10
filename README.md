@@ -46,16 +46,7 @@ and the whispers need the plugin as well.
 3. Download `d2rl-horror-night.dll` from the
    [latest release](https://github.com/latedozer/Horror-mod/releases/latest) (or build it, below) and put it in
    `<game>/mods/<your D2RMM mod name>/d2rloader/plugins/`.
-4. Make the sounds from your own game (they are Blizzard's, so neither the repo nor the DLL has them),
-   then copy the `horror-night-sounds` folder it writes to `<game>/mods/<mod>/d2rloader/horror-night-sounds/`.
-   CascLib.dll ships with D2RMM in its `tools` folder.
-   - Windows: unzip `HorrorNight-sound-tools-windows.zip` from the release, put
-     [ffmpeg.exe](https://ffmpeg.org/download.html) next to it (or on PATH), and run
-     `get-sounds.bat "C:\path\to\Diablo II Resurrected" "C:\path\to\D2RMM\tools\CascLib.dll"`.
-   - Linux: `tools/get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll"`
-     (needs wine with winegcc, and ffmpeg).
-   Without it everything works, just without thunder and whispers (the heartbeat is synthesised).
-5. Start the game twice the first time (D2RLoader builds its table cache on the first start).
+4. Start the game twice the first time (D2RLoader builds its table cache on the first start).
 
 Settings:
 - Data-side (darkness, fog, light radius, volumes, flash look): D2RMM's settings for the mod, then
@@ -72,14 +63,15 @@ otherwise the stormy areas' unused daylight profile shows as a blinding daytime.
 ## Build the plugin
 
 The plugin plays thunder and ambient sounds from the game. Those files belong to Blizzard, so they are
-neither in this repository nor built into the DLL: the plugin reads them at start-up from
-`<mod>/d2rloader/horror-night-sounds/` (`thunder1-4.wav`, `amb/a1-a19.wav`), and `tools/get-sounds.sh`
-makes them from your own installed copy.
+neither in this repository nor in the DLL: at start-up the plugin reads them straight out of the
+installed game's own data (Battle.net and Steam editions) with [CascLib](https://github.com/ladislav-zezula/CascLib),
+decodes them with [dr_flac](https://github.com/mackron/dr_libs) and processes them (bass lift, gain,
+limiter, mono) in `plugin/game_sounds.cpp`. Both libraries are in `plugin/third_party/`.
 
 Linux (what it was developed on):
 
 ```sh
-# 1. tools: mingw-w64 (pacman -S mingw-w64-gcc), wine with winegcc, ffmpeg
+# 1. tools: mingw-w64 (pacman -S mingw-w64-gcc)
 # 2. the D2RLoader Plugin SDK headers
 git clone https://github.com/D2RLoader/PluginSDK ../PluginSDK
 # 3. build
@@ -108,6 +100,7 @@ Engine addresses and structures were found with help from
 ## License
 
 GPL-3.0 (see `LICENSE`). This covers the code and data in this repository only.
+`plugin/third_party/` holds CascLib (MIT, see its `LICENSE`) and dr_flac (public domain / MIT-0).
 
 ## Credits
 
