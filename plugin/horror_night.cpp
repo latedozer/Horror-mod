@@ -968,7 +968,11 @@ void ServerTick(Game* game) {
 					Engine<KillFn>(kKill)(game, unit, nullptr, 0);
 					drop = true;
 				} else {
-					Engine<SetStatFn>(kSetStat)(unit, 6, kPhantomLife, 0);
+					// topped up only when hits have taken a real share (no hit comes near half of it),
+					// instead of every frame: each write marks the unit for an update to the clients
+					if (Engine<GetStatFn>(kGetStat)(unit, 6, 0) < kPhantomLife / 2) {
+						Engine<SetStatFn>(kSetStat)(unit, 6, kPhantomLife, 0);
+					}
 					const bool attacking    = mode == 4 || mode == 5;
 					const bool wasAttacking = phantom.lastMode == 4 || phantom.lastMode == 5;
 					if (attacking && !wasAttacking && nearest <= 7 * 7) {
@@ -1516,8 +1520,10 @@ std::atomic<int>  g_level { -1 };
 std::atomic<bool> g_forceStrike { false };
 int               g_levelLogs = 0;
 
-// ---- sound: a small mixer (one waveOut stream per playing sound, so thunder, whispers
-// and the heartbeat can overlap; Windows mixes the streams) ----
+// ---- sound ----
+// The sounds are loaded on a background thread and played by one mixer thread through one
+// audio stream, so the game's threads never wait on the audio device or touch sample data:
+// PlayClip only queues a request.
 constexpr int kThunderCount = 4;
 constexpr int kAmbientCount = 19; // 0-3 breath, 4-11 moan, 12-15 scream, 16-17 raven, 18 laugh
 struct Clip {
@@ -1525,17 +1531,11 @@ struct Clip {
 	uint32_t       count   = 0;
 	uint32_t       rate    = 22050;
 };
-Clip g_thunder[kThunderCount];
-Clip g_ambient[kAmbientCount];
-Clip g_heartbeatClip;
-
-struct Voice {
-	HWAVEOUT handle  = nullptr;
-	WAVEHDR  header {};
-	int16_t* samples = nullptr;
-	bool     active  = false;
-};
-Voice g_voices[10];
+Clip              g_thunder[kThunderCount];
+Clip              g_ambient[kAmbientCount];
+Clip              g_heartbeatClip;
+std::atomic<bool> g_soundsReady { false }; // set by the loader thread once every clip above is final
+HANDLE            g_soundLoader = nullptr;
 
 uint64_t g_nextStrike  = 0; // tick count of the next strike, 0 = not scheduled
 uint64_t g_flashStart  = 0;
@@ -1661,75 +1661,179 @@ int LoadSounds() {
 	return loaded;
 }
 
-void PollVoices() {
-	for (Voice& voice : g_voices) {
-		if (voice.active && (voice.header.dwFlags & WHDR_DONE) != 0) {
-			waveOutUnprepareHeader(voice.handle, &voice.header, sizeof(WAVEHDR));
-			waveOutClose(voice.handle);
-			free(voice.samples);
-			voice = Voice {};
-		}
-	}
+DWORD WINAPI SoundLoaderThread(void*) {
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+	LoadSounds();
+	g_soundsReady.store(true, std::memory_order_release);
+	return 0;
 }
 
-void StopAllVoices() {
-	for (Voice& voice : g_voices) {
-		if (voice.active) {
-			waveOutReset(voice.handle);
-			waveOutUnprepareHeader(voice.handle, &voice.header, sizeof(WAVEHDR));
-			waveOutClose(voice.handle);
-			free(voice.samples);
-			voice = Voice {};
-		}
-	}
-}
+constexpr uint32_t kMixRate    = 32000;
+constexpr uint32_t kMixBlock   = 1024; // 32 ms per buffer
+constexpr int      kMixBuffers = 3;
+constexpr int      kMaxVoices  = 12;
+constexpr uint32_t kIdleBlocks = kMixRate * 10 / kMixBlock; // close the device after 10 s of silence
 
-void PlayClip(const Clip& clip, float gain) {
-	if (clip.samples == nullptr || clip.count == 0 || gain <= 0.001f) {
-		return;
-	}
-	PollVoices();
-	Voice* voice = nullptr;
-	for (Voice& candidate : g_voices) {
-		if (!candidate.active) {
-			voice = &candidate;
+struct PlayRequest {
+	const Clip* clip;
+	float       gain;
+};
+SRWLOCK           g_playLock = SRWLOCK_INIT;
+PlayRequest       g_requests[16];
+int               g_requestCount = 0;
+HANDLE            g_mixEvent     = nullptr; // auto-reset: a request came in, or the device finished a buffer
+HANDLE            g_mixThread    = nullptr;
+std::atomic<bool> g_mixStop { false };
+
+struct Voice {
+	const Clip* clip;
+	uint64_t    position; // in clip samples, 32.32 fixed point
+	uint64_t    step;
+	float       gain;
+};
+
+DWORD WINAPI MixerThread(void*) {
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); // little work, but it must not starve
+	HWAVEOUT     device = nullptr;
+	WAVEHDR      headers[kMixBuffers] {};
+	static int16_t buffers[kMixBuffers][kMixBlock];
+	float        mix[kMixBlock];
+	Voice        voices[kMaxVoices];
+	int          voiceCount = 0;
+	uint32_t     idle       = 0;
+	bool         failedLogged = false;
+
+	while (!g_mixStop.load(std::memory_order_relaxed)) {
+		WaitForSingleObject(g_mixEvent, INFINITE);
+		if (g_mixStop.load(std::memory_order_relaxed)) {
 			break;
 		}
+		AcquireSRWLockExclusive(&g_playLock);
+		for (int i = 0; i < g_requestCount && voiceCount < kMaxVoices; ++i) {
+			const Clip* clip = g_requests[i].clip;
+			voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, g_requests[i].gain };
+		}
+		g_requestCount = 0;
+		ReleaseSRWLockExclusive(&g_playLock);
+
+		if (device == nullptr) {
+			if (voiceCount == 0) {
+				continue;
+			}
+			WAVEFORMATEX format {};
+			format.wFormatTag      = WAVE_FORMAT_PCM;
+			format.nChannels       = 1;
+			format.nSamplesPerSec  = kMixRate;
+			format.wBitsPerSample  = 16;
+			format.nBlockAlign     = 2;
+			format.nAvgBytesPerSec = kMixRate * 2;
+			if (waveOutOpen(&device, WAVE_MAPPER, &format, reinterpret_cast<DWORD_PTR>(g_mixEvent), 0, CALLBACK_EVENT) != MMSYSERR_NOERROR) {
+				device     = nullptr;
+				voiceCount = 0;
+				if (!failedLogged) {
+					failedLogged = true;
+					Log("sounds: could not open the audio device");
+				}
+				continue;
+			}
+			for (int b = 0; b < kMixBuffers; ++b) {
+				headers[b]                = WAVEHDR {};
+				headers[b].lpData         = reinterpret_cast<LPSTR>(buffers[b]);
+				headers[b].dwBufferLength = sizeof(buffers[b]);
+				waveOutPrepareHeader(device, &headers[b], sizeof(WAVEHDR));
+				headers[b].dwFlags |= WHDR_DONE; // free to fill
+			}
+			idle = 0;
+		}
+
+		// refill every buffer the device has finished with
+		for (int b = 0; b < kMixBuffers; ++b) {
+			if ((headers[b].dwFlags & WHDR_DONE) == 0) {
+				continue;
+			}
+			memset(mix, 0, sizeof(mix));
+			for (int v = 0; v < voiceCount;) {
+				Voice&         voice   = voices[v];
+				const int16_t* samples = voice.clip->samples;
+				const uint32_t count   = voice.clip->count;
+				const bool     soft    = voice.gain > 1.0f; // above full strength the peaks are rounded off, not clipped
+				const float    scale   = voice.gain / 32768.0f;
+				uint32_t       i       = 0;
+				for (; i < kMixBlock; ++i) {
+					const uint64_t at = voice.position >> 32;
+					if (at >= count) {
+						break;
+					}
+					const float frac  = static_cast<float>(voice.position & 0xffffffffULL) * (1.0f / 4294967296.0f);
+					const float a     = samples[at];
+					const float next  = at + 1 < count ? samples[at + 1] : a;
+					const float value = (a + (next - a) * frac) * scale;
+					mix[i] += soft ? std::tanh(value) : value;
+					voice.position += voice.step;
+				}
+				if (i < kMixBlock) {
+					voices[v] = voices[--voiceCount]; // finished
+				} else {
+					++v;
+				}
+			}
+			for (uint32_t i = 0; i < kMixBlock; ++i) {
+				const float value = mix[i] > 1.0f ? 1.0f : mix[i] < -1.0f ? -1.0f : mix[i];
+				buffers[b][i]     = static_cast<int16_t>(value * 32767.0f);
+			}
+			idle = voiceCount > 0 ? 0 : idle + 1;
+			headers[b].dwFlags &= ~static_cast<DWORD>(WHDR_DONE);
+			waveOutWrite(device, &headers[b], sizeof(WAVEHDR));
+		}
+
+		if (idle >= kIdleBlocks) {
+			waveOutReset(device);
+			for (int b = 0; b < kMixBuffers; ++b) {
+				waveOutUnprepareHeader(device, &headers[b], sizeof(WAVEHDR));
+			}
+			waveOutClose(device);
+			device = nullptr;
+		}
 	}
-	if (voice == nullptr) {
-		return; // everything is busy: skip this one
+	if (device != nullptr) {
+		waveOutReset(device);
+		for (int b = 0; b < kMixBuffers; ++b) {
+			waveOutUnprepareHeader(device, &headers[b], sizeof(WAVEHDR));
+		}
+		waveOutClose(device);
 	}
-	voice->samples = static_cast<int16_t*>(malloc(static_cast<size_t>(clip.count) * 2));
-	if (voice->samples == nullptr) {
+	return 0;
+}
+
+void StartMixer() {
+	g_mixEvent  = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+	g_mixThread = g_mixEvent != nullptr ? CreateThread(nullptr, 0, MixerThread, nullptr, 0, nullptr) : nullptr;
+	if (g_mixThread == nullptr) {
+		Log("sounds: could not start the mixer thread");
+	}
+}
+
+void StopMixer() {
+	if (g_mixThread != nullptr) {
+		g_mixStop = true;
+		SetEvent(g_mixEvent);
+		WaitForSingleObject(g_mixThread, 2000);
+		CloseHandle(g_mixThread);
+		g_mixThread = nullptr;
+	}
+}
+
+// Called from the game's threads: only queues the sound.
+void PlayClip(const Clip& clip, float gain) {
+	if (gain <= 0.001f || g_mixThread == nullptr || !g_soundsReady.load(std::memory_order_acquire) || clip.samples == nullptr || clip.count == 0) {
 		return;
 	}
-	const bool boost = gain > 1.0f; // above full strength the peaks are rounded off instead of clipped
-	for (uint32_t i = 0; i < clip.count; ++i) {
-		const float value  = static_cast<float>(clip.samples[i]) * gain;
-		voice->samples[i] = static_cast<int16_t>(boost ? std::tanh(value / 32767.0f) * 32767.0f : value);
+	AcquireSRWLockExclusive(&g_playLock);
+	if (g_requestCount < 16) {
+		g_requests[g_requestCount++] = PlayRequest { &clip, gain };
 	}
-	WAVEFORMATEX format {};
-	format.wFormatTag      = WAVE_FORMAT_PCM;
-	format.nChannels       = 1;
-	format.nSamplesPerSec  = clip.rate;
-	format.wBitsPerSample  = 16;
-	format.nBlockAlign     = 2;
-	format.nAvgBytesPerSec = clip.rate * 2;
-	if (waveOutOpen(&voice->handle, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
-		free(voice->samples);
-		*voice = Voice {};
-		return;
-	}
-	voice->header.lpData         = reinterpret_cast<LPSTR>(voice->samples);
-	voice->header.dwBufferLength = clip.count * 2;
-	if (waveOutPrepareHeader(voice->handle, &voice->header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR
-		|| waveOutWrite(voice->handle, &voice->header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
-		waveOutClose(voice->handle);
-		free(voice->samples);
-		*voice = Voice {};
-		return;
-	}
-	voice->active = true;
+	ReleaseSRWLockExclusive(&g_playLock);
+	SetEvent(g_mixEvent);
 }
 
 void PlayThunder(float gain) {
@@ -1876,10 +1980,16 @@ void UpdateSky(uint64_t now, bool inGame) {
 	}
 }
 
+// A read that fails instead of crashing when the game has moved or freed something. It is a
+// system call (a wineserver round trip under Proton), so it is kept out of per-frame paths.
+bool SafeReadBytes(uintptr_t address, void* out, size_t size) {
+	SIZE_T done = 0;
+	return address > 0x10000 && ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(address), out, size, &done) && done == size;
+}
+
 template <typename T>
 bool SafeRead(uintptr_t address, T* out) {
-	SIZE_T done = 0;
-	return address > 0x10000 && ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(address), out, sizeof(T), &done) && done == sizeof(T);
+	return SafeReadBytes(address, out, sizeof(T));
 }
 
 // ---- real weather ----------------------------------------------------------------
@@ -1901,16 +2011,20 @@ uint64_t  g_weatherNext  = 0;
 int       g_weatherLogs  = 0;
 
 uintptr_t FindWeather() {
-	uintptr_t begin = 0;
-	uint64_t  count = 0;
-	if (!SafeRead(g_base + kWeatherHub + 0x388, &begin) || !SafeRead(g_base + kWeatherHub + 0x390, &count) || begin == 0 || count == 0 || count > 64) {
+	uint64_t list[2] = {}; // {begin, count}
+	if (!SafeRead(g_base + kWeatherHub + 0x388, &list) || list[0] == 0 || list[1] == 0 || list[1] > 64) {
 		return 0;
 	}
-	for (uint64_t i = 0; i < count; ++i) {
-		uintptr_t       function = 0;
-		uintptr_t       object   = 0;
-		const uintptr_t callable = begin + i * 0x30; // {vtable, function, flag, object, ...}, seen in live memory
-		if (SafeRead(callable + 8, &function) && function == g_base + kWeatherStart && SafeRead(callable + 0x18, &object) && object != 0) {
+	static uint8_t entries[64 * 0x30]; // {vtable, function, flag, object, ...} each, seen in live memory
+	if (!SafeReadBytes(list[0], entries, list[1] * 0x30)) {
+		return 0;
+	}
+	for (uint64_t i = 0; i < list[1]; ++i) {
+		uintptr_t function = 0;
+		uintptr_t object   = 0;
+		memcpy(&function, entries + i * 0x30 + 8, 8);
+		memcpy(&object, entries + i * 0x30 + 0x18, 8);
+		if (function == g_base + kWeatherStart && object != 0) {
 			uint8_t flags[2] = { 2, 2 };
 			if (SafeRead(object + 0x7a0, &flags) && flags[0] <= 1 && flags[1] <= 1) {
 				return object;
@@ -1931,55 +2045,82 @@ int WeatherFor(int level) {
 	return -1;
 }
 
+uintptr_t g_weatherObject    = 0;  // found once, then only checked
+int       g_weatherSetType   = -2; // what the last update call asked for...
+int       g_weatherSetLevel  = -2; // ...in which level...
+int       g_weatherSetAmount = -1; // ...at which intensity
+uint64_t  g_weatherReassert  = 0;
+
+// Once a second at most, and normally one memory check: the weather object is remembered, and
+// the game's update is only called when the wanted weather changes (and every 10 s, in case
+// the game stopped it on its own).
 void UpdateWeather(uint64_t now, int level) {
 	if (!g_weatherReady || g_config.weatherEnabled == 0 || now < g_weatherNext) {
 		return;
 	}
-	g_weatherNext = now + 1000;
+	g_weatherNext     = now + 1000;
 	const bool inGame = level > 0;
 	if (!inGame && !g_weatherHeld) {
 		return;
 	}
-	const uintptr_t weather = FindWeather();
-	if (weather == 0) {
-		if (inGame && g_weatherLogs < 2) {
-			++g_weatherLogs;
-			Log("weather: the game's weather object was not found (yet)");
-		}
-		return;
+	uint8_t flags[2] = { 2, 2 }; // +0x7a0 effects loaded, +0x7a1 override
+	if (g_weatherObject != 0 && (!SafeRead(g_weatherObject + 0x7a0, &flags) || flags[0] > 1 || flags[1] > 1)) {
+		g_weatherObject = 0; // gone or reused: look again
 	}
-	uint8_t loaded = 0;
-	if (!SafeRead(weather + 0x7a0, &loaded) || loaded == 0) {
+	if (g_weatherObject == 0) {
+		g_weatherObject  = FindWeather();
+		g_weatherSetType = -2;
+		if (g_weatherObject == 0 || !SafeRead(g_weatherObject + 0x7a0, &flags)) {
+			g_weatherObject = 0;
+			if (inGame && g_weatherLogs < 2) {
+				++g_weatherLogs;
+				Log("weather: the game's weather object was not found (yet)");
+			}
+			return;
+		}
+	}
+	if (flags[0] == 0) {
 		return; // its effects are still loading; starting now would wait inside the game
 	}
-	const int wanted = inGame ? WeatherFor(level) : -1;
+	auto* const weather = reinterpret_cast<void*>(g_weatherObject);
 	if (!inGame) {
 		if (g_weatherOn) {
 			uint8_t flag = 1;
-			reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(reinterpret_cast<void*>(weather), &flag, 1);
+			reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(weather, &flag, 1);
 			g_weatherOn = false;
 		}
-		*reinterpret_cast<uint8_t*>(weather + 0x7a1) = 0; // hand the weather back to the game
-		g_weatherHeld = false;
+		*reinterpret_cast<uint8_t*>(g_weatherObject + 0x7a1) = 0; // hand the weather back to the game
+		g_weatherHeld    = false;
+		g_weatherSetType = -2;
 		return;
 	}
-	*reinterpret_cast<uint8_t*>(weather + 0x7a1) = 1;
-	g_weatherHeld = true;
+	if (flags[1] != 1) {
+		*reinterpret_cast<uint8_t*>(g_weatherObject + 0x7a1) = 1;
+	}
+	g_weatherHeld    = true;
+	const int wanted = WeatherFor(level);
 	if (wanted >= 0) {
-		struct {
-			int32_t type;
-			float   intensity;
-		} params { wanted, static_cast<float>(g_config.weatherIntensity) / 100.0f };
-		reinterpret_cast<WeatherFn>(g_base + kWeatherUpdate)(reinterpret_cast<void*>(weather), &params, 1);
-		if (!g_weatherOn && g_weatherLogs < 6) {
-			++g_weatherLogs;
-			Log("weather: %s started in level %d at %d%%", wanted == 0 ? "rain" : "snow", level, g_config.weatherIntensity);
+		if (wanted != g_weatherSetType || level != g_weatherSetLevel || g_config.weatherIntensity != g_weatherSetAmount || now >= g_weatherReassert) {
+			struct {
+				int32_t type;
+				float   intensity;
+			} params { wanted, static_cast<float>(g_config.weatherIntensity) / 100.0f };
+			reinterpret_cast<WeatherFn>(g_base + kWeatherUpdate)(weather, &params, 1);
+			if (!g_weatherOn && g_weatherLogs < 6) {
+				++g_weatherLogs;
+				Log("weather: %s started in level %d at %d%%", wanted == 0 ? "rain" : "snow", level, g_config.weatherIntensity);
+			}
+			g_weatherOn        = true;
+			g_weatherSetType   = wanted;
+			g_weatherSetLevel  = level;
+			g_weatherSetAmount = g_config.weatherIntensity;
+			g_weatherReassert  = now + 10000;
 		}
-		g_weatherOn = true;
 	} else if (g_weatherOn) {
 		uint8_t flag = 1;
-		reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(reinterpret_cast<void*>(weather), &flag, 1);
-		g_weatherOn = false;
+		reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(weather, &flag, 1);
+		g_weatherOn      = false;
+		g_weatherSetType = -2;
 	}
 }
 
@@ -1991,12 +2132,12 @@ const D2RL::ThreadService* g_threads = nullptr;
 std::atomic<bool>          g_falseJobQueued { false };
 
 uintptr_t FindClientPlayer(uint32_t id) {
-	const uintptr_t table = g_base + 0x2A23910; // type 0 = players
+	uintptr_t buckets[128] = {}; // type 0 = players
+	if (!SafeRead(g_base + 0x2A23910, &buckets)) {
+		return 0;
+	}
 	for (int bucket = 0; bucket < 128; ++bucket) {
-		uintptr_t unit = 0;
-		if (!SafeRead(table + bucket * 8, &unit)) {
-			continue;
-		}
+		uintptr_t unit = buckets[bucket];
 		for (int guard = 0; unit != 0 && guard < 64; ++guard) {
 			uint32_t header[4] = {};
 			if (!SafeRead(unit, &header) || header[0] != 0) {
@@ -2085,7 +2226,6 @@ const Clip& AmbientClip(int first, int last) {
 }
 
 void UpdateSounds(uint64_t now, int level) {
-	PollVoices();
 	const bool  inGame = level > 0;
 	const float volume = static_cast<float>(g_config.ambientVolume) / 100.0f;
 
@@ -2171,7 +2311,7 @@ void SetUpClientExtras() {
 
 void ReleaseClientExtras() {
 	if (g_weatherHeld) {
-		const uintptr_t weather = FindWeather();
+		const uintptr_t weather = g_weatherObject != 0 ? g_weatherObject : FindWeather();
 		if (weather != 0) {
 			*reinterpret_cast<uint8_t*>(weather + 0x7a1) = 0;
 		}
@@ -2325,10 +2465,14 @@ bool SetUpStorm() {
 		&& g_ctx->CheckExpectedBytes(0x7cd8fe, kOverride, sizeof(kOverride));
 	Log("storm: sky flash %s", g_skyReady ? (g_config.skyFlash != 0 ? "on" : "available, switched off in the config") : "off - renderer code does not look as expected");
 
-	const int loaded = LoadSounds();
+	// reading and processing the sounds takes most of a second: done off the game's threads
+	StartMixer();
+	g_soundLoader = CreateThread(nullptr, 0, SoundLoaderThread, nullptr, 0, nullptr);
+	if (g_soundLoader == nullptr) {
+		Log("sounds: could not start the loader thread");
+	}
 	SetUpClientExtras();
-	Log("storm: on - strike every %d-%d s, flash %d, volume %d, %d sounds loaded", g_config.stormMinInterval, g_config.stormMaxInterval, g_config.flashStrength,
-		g_config.volume, loaded);
+	Log("storm: on - strike every %d-%d s, flash %d, volume %d", g_config.stormMinInterval, g_config.stormMaxInterval, g_config.flashStrength, g_config.volume);
 	return true;
 }
 
@@ -2414,7 +2558,12 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
 		g_skyHolding = false;
 	}
 	ReleaseClientExtras();
-	StopAllVoices();
+	if (g_soundLoader != nullptr) {
+		WaitForSingleObject(g_soundLoader, 5000); // it must not outlive the DLL
+		CloseHandle(g_soundLoader);
+		g_soundLoader = nullptr;
+	}
+	StopMixer();
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
