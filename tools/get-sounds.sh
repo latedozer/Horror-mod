@@ -3,6 +3,7 @@
 # Diablo II: Resurrected and converts them to WAV. The game's sound files are
 # Blizzard's and are not part of this repository.
 #
+# Windows: use get-sounds.bat instead.
 # Linux: needs wine (with winegcc), ffmpeg, and CascLib.dll (D2RMM ships one in its
 # tools folder).
 #   ./get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll" [output folder]

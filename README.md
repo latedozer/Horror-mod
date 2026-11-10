@@ -46,9 +46,14 @@ and the whispers need the plugin as well.
 3. Download `d2rl-horror-night.dll` from the
    [latest release](https://github.com/latedozer/Horror-mod/releases/latest) (or build it, below) and put it in
    `<game>/mods/<your D2RMM mod name>/d2rloader/plugins/`.
-4. Make the sounds from your own game (they are Blizzard's, so neither the repo nor the DLL has them):
-   `tools/get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll"`, then copy
-   the `horror-night-sounds` folder it writes to `<game>/mods/<mod>/d2rloader/horror-night-sounds/`.
+4. Make the sounds from your own game (they are Blizzard's, so neither the repo nor the DLL has them),
+   then copy the `horror-night-sounds` folder it writes to `<game>/mods/<mod>/d2rloader/horror-night-sounds/`.
+   CascLib.dll ships with D2RMM in its `tools` folder.
+   - Windows: unzip `HorrorNight-sound-tools-windows.zip` from the release, put
+     [ffmpeg.exe](https://ffmpeg.org/download.html) next to it (or on PATH), and run
+     `get-sounds.bat "C:\path\to\Diablo II Resurrected" "C:\path\to\D2RMM\tools\CascLib.dll"`.
+   - Linux: `tools/get-sounds.sh "/path/to/Diablo II Resurrected" "/path/to/D2RMM/tools/CascLib.dll"`
+     (needs wine with winegcc, and ffmpeg).
    Without it everything works, just without thunder and whispers (the heartbeat is synthesised).
 5. Start the game twice the first time (D2RLoader builds its table cache on the first start).
 
