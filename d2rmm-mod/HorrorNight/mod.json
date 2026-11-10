@@ -1,8 +1,8 @@
 {
-  "name": "Horror Night",
-  "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horror Night plugin) phantom monsters, lightning and thunder.",
+  "name": "Horrors in the Night",
+  "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horrors in the Night plugin) phantom monsters, lightning and thunder.",
   "author": "Latedozer",
-  "version": "1.0",
+  "version": "1.0.0",
   "config": [
     {
       "id": "alwaysNight",
@@ -15,7 +15,7 @@
       "id": "alwaysWeather",
       "type": "checkbox",
       "name": "Overlay rain / snow (not needed with the plugin)",
-      "description": "A visual-only rain and snow overlay. The Horror Night plugin now drives the game's real weather instead, so leave this off unless you run without the plugin.",
+      "description": "A visual-only rain and snow overlay. The Horrors in the Night plugin now drives the game's real weather instead, so leave this off unless you run without the plugin.",
       "defaultValue": false
     },
     {
@@ -64,14 +64,14 @@
     {
       "id": "phantoms",
       "type": "checkbox",
-      "name": "Phantom monsters (needs the Horror Night plugin)",
+      "name": "Phantom monsters (needs the Horrors in the Night plugin)",
       "description": "Adds the false-monster rows that the d2rl-horror-night plugin spawns: unkillable, they drain life without killing, and vanish after a random time. Timing and strength are set in the plugin's horror-night.toml.",
       "defaultValue": true
     },
     {
       "id": "lightning",
       "type": "checkbox",
-      "name": "Lightning bolts (needs the Horror Night plugin)",
+      "name": "Lightning bolts (needs the Horrors in the Night plugin)",
       "description": "Adds the harmless lightning bolt the plugin drops near you during storms. It lights up the area around it for a moment.",
       "defaultValue": true
     },
@@ -87,7 +87,7 @@
     {
       "id": "skyFlash",
       "type": "checkbox",
-      "name": "Lightning lights the whole sky (needs the Horror Night plugin)",
+      "name": "Lightning lights the whole sky (needs the Horrors in the Night plugin)",
       "description": "Turns the unused daytime lighting of stormy outdoor areas into the lit-by-lightning look that the plugin flashes for a split second. Only with Always night on. Turn this off if you remove the plugin, or daytime will look like a permanent flash.",
       "defaultValue": true
     },

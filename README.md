@@ -1,4 +1,4 @@
-# Horror Night
+# Horrors in the Night
 
 A horror overhaul for **Diablo II: Resurrected** (Reign of the Warlock, D2R 3.3/3.4) running through
 [D2RLoader](https://github.com/D2RLoader/PluginSDK). It has two parts:

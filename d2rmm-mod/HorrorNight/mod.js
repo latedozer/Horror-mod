@@ -1,4 +1,4 @@
-// Horror Night - always night, darker world, light radius matters.
+// Horrors in the Night - always night, darker world, light radius matters.
 // Only touches HD lighting profiles (data/hd/env/vis). Weather (rain/snow) is untouched.
 const FAMILIES = ["act1_barracks", "act1_campfire", "act1_catacombs", "act1_cathedral", "act1_caves", "act1_court", "act1_crypt", "act1_outdoors", "act1_tristram", "act2_arcane", "act2_bigcliff", "act2_maggot", "act2_outdoors", "act2_palace", "act2_palace_cells", "act2_palace_clean", "act2_ruin", "act2_sewer", "act2_tomb", "act2_town", "act3_docktown", "act3_jungle", "act3_jungle_dungeon", "act3_kurast", "act3_kurast_stone_tile", "act3_sewer", "act3_spider", "act3_temple", "act3_travincal", "act4_diab", "act4_fort", "act4_lava", "act4_mesa", "expansion_baallair", "expansion_baallair_throneroom", "expansion_icecave", "expansion_mountaintop", "expansion_ruins", "expansion_ruins_snow", "expansion_siege", "expansion_siege_town", "expansion_town", "expansion_wildtemple", "expansion_wildtemple_tempenter", "uberarreatsummit"];
 const SINGLES = ["act1_barracks_desecrated", "act1_catacombs_desecrated", "act1_caves_desecrated", "act1_court_desecrated", "act1_crypt_desecrated", "act1_outdoors_desecrated", "act1_outdoors_interior01_vis", "act2_arcane_desecrated", "act2_maggot_desecrated", "act2_palace_cells_desecrated", "act2_palace_desecrated", "act2_sewer_desecrated", "act2_tainted_sun", "act2_tomb_desecrated", "act2_town_desecrated", "act2_town_interior_vis", "act3_docktown_desecrated", "act3_jungle_dungeon_desecrated", "act3_sewer_desecrated", "act3_spider_desecrated", "act3_temple_desecrated", "act3_travincal_desecrated", "act4_fort_interior_vis", "act4_lava_desecrated", "act4_mesa_desecrated", "denofevil_vis", "diabloappears_vis", "expansion_baallair_throneroom_desecrated", "expansion_icecave_desecrated", "expansion_mountaintop_desecrated", "expansion_siege_desecrated", "expansion_wildtemple_desecrated", "expansion_wildtemple_tempenter_desecrated", "uberarreatsummit_desecrated", "visbox_act1_cathedral_vis", "visbox_docktown_interior01_vis", "visbox_harrograth_vis", "visbox_kurast_hut_ambient_vis", "visbox_kurast_temple_ambient_vis", "visbox_monastry_vis", "visbox_tempenter_darkness_vis", "visbox_tempenter_roof_vis", "visbox_tower_vis"];
@@ -84,7 +84,7 @@ function darken(def, amount) {
   }
 }
 
-// Sky flash: the Horror Night plugin holds the renderer on "night" and, for a lightning
+// Sky flash: the Horrors in the Night plugin holds the renderer on "night" and, for a lightning
 // strike, blends for a split second toward the "day" profile. So in stormy outdoor areas
 // the day profile becomes the lit-by-lightning look: cold, bright, and monsters fully lit.
 // Without the plugin the game's own clock would show this profile as daytime.
@@ -145,7 +145,7 @@ SINGLES.forEach((name) => {
 });
 
 // ---------------------------------------------------------------------------
-// Phantoms: the monster rows the Horror Night plugin spawns. Without the plugin
+// Phantoms: the monster rows the Horrors in the Night plugin spawns. Without the plugin
 // (d2rl-horror-night.dll) these rows are never used.
 // Every melee monster that can appear in a level gets a phantom twin, so a phantom
 // always looks like something that belongs where you are. A twin deals no table
@@ -309,7 +309,7 @@ if (config.phantoms) {
 }
 
 // ---------------------------------------------------------------------------
-// Lightning: a harmless copy of the Thunder Storm bolt that the Horror Night
+// Lightning: a harmless copy of the Thunder Storm bolt that the Horrors in the Night
 // plugin drops near you during storms. No skill, no damage, hits nothing; it
 // only shows the bolt, cracks, and lights the area around it.
 // The plugin finds the row by Param4 = 7777 and Param5 = 4242.

@@ -1,4 +1,4 @@
-// Horror Night - D2RLoader plugin
+// Horrors in the Night - D2RLoader plugin
 //   * phantoms: false monsters that cannot be killed, drain life without killing,
 //     and vanish after a random time (server side, one game-frame hook)
 //   * storm: lightning flash + thunder in rainy areas (client side, overlay + winmm)
@@ -501,7 +501,7 @@ void JoinSettingsMenu() {
 		return; // I Hate TOMLs is not installed, or has not loaded yet
 	}
 
-	size_t used = static_cast<size_t>(snprintf(g_menuText, sizeof(g_menuText), "title = \"Horror Night\"\n"));
+	size_t used = static_cast<size_t>(snprintf(g_menuText, sizeof(g_menuText), "title = \"Horrors in the Night\"\n"));
 	for (const MenuRow& row : kMenu) {
 		if (used > sizeof(g_menuText) - 600) {
 			break;
@@ -1305,7 +1305,7 @@ void LoadLevelMonsters() {
 
 	HANDLE handle = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
 	if (handle == INVALID_HANDLE_VALUE) {
-		Log("phantoms: could not open %ls (run Install in D2RMM with the Horror Night mod's phantoms on)", file);
+		Log("phantoms: could not open %ls (run Install in D2RMM with the Horrors in the Night mod's phantoms on)", file);
 		return;
 	}
 	static char text[262144];
@@ -2486,20 +2486,20 @@ D2RL::ConsoleCommandResult __cdecl OnConsole(D2R::Game::Client*, const D2RL::Con
 	char text[400];
 	if (strncmp(args, "spawn", 5) == 0) {
 		g_forceSpawn = true;
-		g_ctx->WriteConsoleMessage("Horror Night: a phantom appears on the next game frame (not in town).");
+		g_ctx->WriteConsoleMessage("Horrors in the Night: a phantom appears on the next game frame (not in town).");
 	} else if (strncmp(args, "test", 4) == 0) {
 		const int row = atoi(args + 4);
 		g_testRow     = row;
-		snprintf(text, sizeof(text), "Horror Night: firing missiles row %d near you (not in town).", row);
+		snprintf(text, sizeof(text), "Horrors in the Night: firing missiles row %d near you (not in town).", row);
 		g_ctx->WriteConsoleMessage(text);
 	} else if (strncmp(args, "haunt", 5) == 0) {
 		g_forceHaunt = true;
-		g_ctx->WriteConsoleMessage("Horror Night: a haunting starts on the next game frame (needs undead in this area, not in town).");
+		g_ctx->WriteConsoleMessage("Horrors in the Night: a haunting starts on the next game frame (needs undead in this area, not in town).");
 	} else if (strncmp(args, "strike", 6) == 0) {
 		g_forceStrike = true;
-		g_ctx->WriteConsoleMessage("Horror Night: lightning strike.");
+		g_ctx->WriteConsoleMessage("Horrors in the Night: lightning strike.");
 	} else {
-		snprintf(text, sizeof(text), "Horror Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, level %d. Commands: horror spawn | strike | status",
+		snprintf(text, sizeof(text), "Horrors in the Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, level %d. Commands: horror spawn | strike | status",
 			g_serverReady.load() ? "on" : "off", g_diabloDead.load() ? ", stopped: Diablo is dead" : "", g_aliveCount.load(), g_totalSpawned.load(), g_totalDrains.load(), g_classes[1].count, g_classes[2].count,
 			g_classes[3].count, g_lightningRow[3], g_overlay != nullptr ? "on" : "off", g_level.load());
 		g_ctx->WriteConsoleMessage(text);
@@ -2511,7 +2511,7 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.infoSize    = D2RL::PluginInfoSize,
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
-	.name        = "Horror Night",
+	.name        = "Horrors in the Night",
 	.version     = "1.0.0",
 	.author      = "Latedozer",
 	.description = "Phantom monsters that cannot be killed and vanish on a timer, plus lightning and thunder.",
@@ -2539,11 +2539,11 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 		g_rng = 1;
 	}
 
-	Log("Horror Night %s loading (D2R %s, SDK %s)", kPluginInfo.version, context->buildVersion != nullptr ? context->buildVersion : "?", D2RL_SDK_VERSION);
+	Log("Horrors in the Night %s loading (D2R %s, SDK %s)", kPluginInfo.version, context->buildVersion != nullptr ? context->buildVersion : "?", D2RL_SDK_VERSION);
 	LoadConfig();
 	SetUpServer();
 	SetUpStorm();
-	static_cast<void>(context->RegisterConsoleCommand("horror", OnConsole, "Horror Night: status, spawn, strike"));
+	static_cast<void>(context->RegisterConsoleCommand("horror", OnConsole, "Horrors in the Night: status, spawn, strike"));
 	JoinSettingsMenu();
 	if (!g_menuJoined) {
 		Log("settings menu: I Hate TOMLs not available at load (will try again when a game starts)");
