@@ -99,7 +99,7 @@ Engine addresses and structures were found with help from
 
 ## License
 
-GPL-3.0 (see `LICENSE`). This covers the code and data in this repository only.
+MIT (see `LICENSE`). This covers the code and data in this repository only.
 `plugin/third_party/` holds CascLib (MIT, see its `LICENSE`) and dr_flac (public domain / MIT-0).
 
 ## Credits
