@@ -106,6 +106,7 @@ struct Config {
 	int boltsPerHit      = 1;  // ...with this many bolts each time
 	int boltSpread       = 16; // farthest a bolt lands from you, in tiles
 	int boltMinDistance  = 7;  // nearest a normal bolt lands
+	int directHits       = 1;  // strikes can land on the player at all
 	int directHitChance  = 6;  // percent of strikes that land on the player
 	int directHitDamage  = 5;  // percent of MAXIMUM life a direct hit removes (never kills): lowest...
 	int directHitDamageMax = 10; // ...and highest
@@ -169,6 +170,7 @@ void ApplyConfigValue(const char* section, const char* key, const char* value) {
 		{ "storm", "bolts_per_hit", &g_config.boltsPerHit },
 		{ "storm", "bolt_spread", &g_config.boltSpread },
 		{ "storm", "bolt_min_distance", &g_config.boltMinDistance },
+		{ "storm", "direct_hits", &g_config.directHits },
 		{ "storm", "direct_hit_chance", &g_config.directHitChance },
 		{ "storm", "direct_hit_damage_min", &g_config.directHitDamage },
 		{ "storm", "direct_hit_damage_max", &g_config.directHitDamageMax },
@@ -325,7 +327,7 @@ const MenuRow kMenu[] = {
 	{ "sounds", "volume", &g_config.ambientVolume, false, "Volume (%)", "100 is as recorded.", 0, 300, 5 },
 
 	{ nullptr, nullptr, nullptr, false, "Storm", nullptr, 0, 0, 0 },
-	{ "storm", "enabled", &g_config.stormEnabled, true, "Lightning and thunder", "In the rainy outdoor areas of Acts 1 and 3.", 0, 0, 0 },
+	{ "storm", "enabled", &g_config.stormEnabled, true, "Lightning and thunder", "In the rainy outdoor areas of Acts 1 and 3. Needs the weather on.", 0, 0, 0 },
 	{ "storm", "min_interval", &g_config.stormMinInterval, false, "Shortest wait (seconds)", "Time between strikes is random between the two.", 3, 3600, 5 },
 	{ "storm", "max_interval", &g_config.stormMaxInterval, false, "Longest wait (seconds)", nullptr, 3, 7200, 5 },
 	{ "storm", "volume", &g_config.volume, false, "Thunder volume (%)", nullptr, 0, 300, 5 },
@@ -337,6 +339,7 @@ const MenuRow kMenu[] = {
 	{ "storm", "bolts_per_hit", &g_config.boltsPerHit, false, "Bolts per flicker", nullptr, 1, 8, 1 },
 	{ "storm", "bolt_min_distance", &g_config.boltMinDistance, false, "Nearest a bolt lands (tiles)", nullptr, 2, 30, 1 },
 	{ "storm", "bolt_spread", &g_config.boltSpread, false, "Farthest a bolt lands (tiles)", nullptr, 4, 30, 1 },
+	{ "storm", "direct_hits", &g_config.directHits, true, "Lightning can strike you", "Off: bolts only land around you, never on you.", 0, 0, 0 },
 	{ "storm", "direct_hit_chance", &g_config.directHitChance, false, "Strikes that hit you (%)", nullptr, 0, 100, 1 },
 	{ "storm", "direct_hit_damage_min", &g_config.directHitDamage, false, "Direct hit: least damage (% of max life)", "A direct hit always leaves at least 1 life.", 0, 100, 1 },
 	{ "storm", "direct_hit_damage_max", &g_config.directHitDamageMax, false, "Direct hit: most damage (% of max life)", nullptr, 0, 100, 1 },
@@ -555,6 +558,10 @@ using RoomAtFn      = Room* (*)(Room* room, int32_t x, int32_t y);
 using RoomLevelFn   = int32_t (*)(Room* room);
 using SpawnFn       = Unit* (*)(Game* game, Room* room, int32_t x, int32_t y, int32_t monsterClass, int32_t mode, int32_t search, uint16_t flags);
 using KillFn        = void (*)(Game* game, Unit* victim, Unit* killer, int32_t flag);
+// unsummon (how the game makes a replaced pet vanish): detach, tell the room's clients, free
+using DetachUnitFn  = void (*)(Game* game, Unit* unit, int32_t a, int32_t b, int32_t c, int32_t d);
+using RoomForgetFn  = void (*)(Room* room, uint32_t type, uint32_t id);
+using RemoveUnitFn  = void (*)(Game* game, Unit* unit);
 using GetStatFn     = int32_t (*)(Unit* unit, uint32_t stat, uint16_t layer);
 using SetStatFn     = void (*)(Unit* unit, uint32_t stat, int32_t value, uint16_t layer);
 using MissileCreateFn = Unit* (*)(Game* game, void* params);
@@ -575,7 +582,7 @@ struct EngineFunction {
 
 enum : int {
 	kIterPlayers, kUnitRoom, kUnitPos, kFindUnit, kRoomAt, kRoomLevel, kSpawn, kKill, kGetStat, kSetStat,
-	kMissileCreate, kPlayerClient, kSendMissile, kCastId, kUnitOwner, kUnitDistance, kUnitDirection, kFunctionCount
+	kMissileCreate, kPlayerClient, kSendMissile, kCastId, kUnitOwner, kUnitDistance, kUnitDirection, kDetachUnit, kRoomForget, kRemoveUnit, kFunctionCount
 };
 
 const EngineFunction kFunctions[kFunctionCount] = {
@@ -597,6 +604,9 @@ const EngineFunction kFunctions[kFunctionCount] = {
 	{ "UnitOwner", 0x4a53c0, { 0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8 } },
 	{ "UnitDistance", 0x596720, { 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89 } },
 	{ "UnitDirection", 0x348650, { 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89 } },
+	{ "DetachUnit", 0x4a5800, { 0x48, 0x89, 0x6c, 0x24, 0x18, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83 } },
+	{ "RoomForget", 0x2ef4d0, { 0x48, 0x85, 0xc9, 0x74, 0x69, 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89 } },
+	{ "RemoveUnit", 0x48faa0, { 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b } },
 };
 
 const uint8_t kFrameEntry[16] = { 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x57, 0x48, 0x8d, 0x6c, 0x24, 0xb9, 0x48, 0x81 };
@@ -778,6 +788,21 @@ struct Death {
 Death g_deaths[32];
 int   g_deathNext = 0;
 
+// A phantom whose time is up leaves no body: it is taken out of the game the way the game
+// unsummons a replaced pet (detach, tell the clients in its room, free). Falls back to a
+// plain kill if it has no room.
+void Vanish(Game* game, Unit* unit) {
+	Room* room = Engine<UnitRoomFn>(kUnitRoom)(unit);
+	if (room == nullptr) {
+		Engine<KillFn>(kKill)(game, unit, nullptr, 0);
+		return;
+	}
+	const uint32_t id = UnitId(unit);
+	Engine<DetachUnitFn>(kDetachUnit)(game, unit, -1, 1, 0, 0);
+	Engine<RoomForgetFn>(kRoomForget)(room, 1, id);
+	Engine<RemoveUnitFn>(kRemoveUnit)(game, unit);
+}
+
 // Puts one phantom of this class at (or next to) the spot. Returns false when the game refuses.
 bool SpawnPhantomAt(Game* game, Room* nearRoom, int32_t x, int32_t y, int monsterClass, uint32_t frame, uint32_t lifeFrames, const char* what) {
 	if (g_phantomCount >= kMaxPhantoms) {
@@ -809,10 +834,46 @@ bool SpawnPhantomAt(Game* game, Room* nearRoom, int32_t x, int32_t y, int monste
 
 // A haunting: one of the dead wearing a townsperson's name walks up, the corpses around
 // you get back to their feet, and (client side) your life orb reads 1 until they are gone.
+// Any townsfolk-named row for this act (or, failing that, any act): for levels whose own
+// monster list has no undead, so a haunting can still happen there.
+int AnyTownsfolk(const ClassList* classes, int act) {
+	int candidates[kMaxClasses];
+	int count = 0;
+	for (int i = 0; i < classes->count; ++i) {
+		if (classes->acts[i] == act) {
+			candidates[count++] = classes->ids[i];
+		}
+	}
+	if (count == 0) {
+		for (int i = 0; i < classes->count; ++i) {
+			if (classes->acts[i] >= 0) {
+				candidates[count++] = classes->ids[i];
+			}
+		}
+	}
+	return count > 0 ? candidates[Rand() % static_cast<uint32_t>(count)] : -1;
+}
+
+void LogHauntFailure(int level, const char* why) {
+	static int logs = 0;
+	if (++logs <= 10) {
+		Log("phantoms: no haunting in level %d - %s", level, why);
+	}
+}
+
 bool StartHaunting(Game* game, const ClassList* classes, Unit* player, uint32_t frame, int level) {
-	const int townsfolk = PickPhantomClass(game, classes, level, ActOfLevel(level));
-	Room*     playerRoom = Engine<UnitRoomFn>(kUnitRoom)(player);
-	if (townsfolk < 0 || playerRoom == nullptr) {
+	const int act       = ActOfLevel(level);
+	int       townsfolk = PickPhantomClass(game, classes, level, act); // one of this level's own undead
+	if (townsfolk < 0) {
+		townsfolk = AnyTownsfolk(classes, act); // no undead live here: one of the act's dead walks in anyway
+	}
+	Room* playerRoom = Engine<UnitRoomFn>(kUnitRoom)(player);
+	if (townsfolk < 0) {
+		LogHauntFailure(level, "the D2RMM mod has no townsfolk rows (\"Townsfolk among the dead\" off?)");
+		return false;
+	}
+	if (playerRoom == nullptr) {
+		LogHauntFailure(level, "the player has no room");
 		return false;
 	}
 	int32_t origin[2] = { 0, 0 };
@@ -827,6 +888,7 @@ bool StartHaunting(Game* game, const ClassList* classes, Unit* player, uint32_t 
 			townsfolk, frame, life, "townsfolk");
 	}
 	if (!placed) {
+		LogHauntFailure(level, "the game refused to place the townsperson");
 		return false;
 	}
 
@@ -965,7 +1027,7 @@ void ServerTick(Game* game) {
 				}
 
 				if (frame >= phantom.expireFrame || nearestPlayer < 0 || nearest > 45 * 45) {
-					Engine<KillFn>(kKill)(game, unit, nullptr, 0);
+					Vanish(game, unit);
 					drop = true;
 				} else {
 					// topped up only when hits have taken a real share (no hit comes near half of it),
@@ -1001,7 +1063,7 @@ void ServerTick(Game* game) {
 		return;
 	}
 	g_nextSpawn = frame + static_cast<uint32_t>(RandRange(g_config.minInterval, g_config.maxInterval)) * 25;
-	if (players.count == 0 || g_phantomCount >= g_config.maxAlive) {
+	if (players.count == 0 || (g_phantomCount >= g_config.maxAlive && !forcedHaunt)) {
 		return;
 	}
 
@@ -1135,7 +1197,7 @@ void WorldFlash(Game* game, const PlayerList& players) {
 		g_flashSeen = requests;
 		hitsLeft    = RandRange(g_config.hitsMin, g_config.hitsMax);
 		nextHit     = frame;
-		directHit   = static_cast<int>(Rand() % 100) < g_config.directHitChance;
+		directHit   = g_config.directHits != 0 && static_cast<int>(Rand() % 100) < g_config.directHitChance;
 		firstFlicker = true;
 		memset(spots, 0, sizeof(spots));
 	}
@@ -2055,12 +2117,14 @@ uint64_t  g_weatherReassert  = 0;
 // the game's update is only called when the wanted weather changes (and every 10 s, in case
 // the game stopped it on its own).
 void UpdateWeather(uint64_t now, int level) {
-	if (!g_weatherReady || g_config.weatherEnabled == 0 || now < g_weatherNext) {
+	if (!g_weatherReady || now < g_weatherNext) {
 		return;
 	}
 	g_weatherNext     = now + 1000;
 	const bool inGame = level > 0;
-	if (!inGame && !g_weatherHeld) {
+	// turned off (also from the in-game settings menu): stop our rain and give the weather back
+	const bool wanted = inGame && g_config.weatherEnabled != 0;
+	if (!wanted && !g_weatherHeld) {
 		return;
 	}
 	uint8_t flags[2] = { 2, 2 }; // +0x7a0 effects loaded, +0x7a1 override
@@ -2083,7 +2147,7 @@ void UpdateWeather(uint64_t now, int level) {
 		return; // its effects are still loading; starting now would wait inside the game
 	}
 	auto* const weather = reinterpret_cast<void*>(g_weatherObject);
-	if (!inGame) {
+	if (!wanted) {
 		if (g_weatherOn) {
 			uint8_t flag = 1;
 			reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(weather, &flag, 1);
@@ -2098,20 +2162,20 @@ void UpdateWeather(uint64_t now, int level) {
 		*reinterpret_cast<uint8_t*>(g_weatherObject + 0x7a1) = 1;
 	}
 	g_weatherHeld    = true;
-	const int wanted = WeatherFor(level);
-	if (wanted >= 0) {
-		if (wanted != g_weatherSetType || level != g_weatherSetLevel || g_config.weatherIntensity != g_weatherSetAmount || now >= g_weatherReassert) {
+	const int type = WeatherFor(level);
+	if (type >= 0) {
+		if (type != g_weatherSetType || level != g_weatherSetLevel || g_config.weatherIntensity != g_weatherSetAmount || now >= g_weatherReassert) {
 			struct {
 				int32_t type;
 				float   intensity;
-			} params { wanted, static_cast<float>(g_config.weatherIntensity) / 100.0f };
+			} params { type, static_cast<float>(g_config.weatherIntensity) / 100.0f };
 			reinterpret_cast<WeatherFn>(g_base + kWeatherUpdate)(weather, &params, 1);
 			if (!g_weatherOn && g_weatherLogs < 6) {
 				++g_weatherLogs;
-				Log("weather: %s started in level %d at %d%%", wanted == 0 ? "rain" : "snow", level, g_config.weatherIntensity);
+				Log("weather: %s started in level %d at %d%%", type == 0 ? "rain" : "snow", level, g_config.weatherIntensity);
 			}
 			g_weatherOn        = true;
-			g_weatherSetType   = wanted;
+			g_weatherSetType   = type;
 			g_weatherSetLevel  = level;
 			g_weatherSetAmount = g_config.weatherIntensity;
 			g_weatherReassert  = now + 10000;
@@ -2327,7 +2391,8 @@ void __cdecl OnOverlayFrame(const D2RL::PluginContext* context, const D2RL::Over
 	const bool     forced = g_forceStrike.exchange(false);
 	const Area     area   = forced ? Area::Outdoor : StormArea(g_level.load(std::memory_order_relaxed));
 
-	if (area == Area::None || (g_config.stormEnabled == 0 && !forced)) {
+	// no weather, no storm: lightning only comes with the rain and snow
+	if (area == Area::None || ((g_config.stormEnabled == 0 || g_config.weatherEnabled == 0) && !forced)) {
 		g_nextStrike = 0;
 	} else {
 		if (g_nextStrike == 0) {
@@ -2494,12 +2559,12 @@ D2RL::ConsoleCommandResult __cdecl OnConsole(D2R::Game::Client*, const D2RL::Con
 		g_ctx->WriteConsoleMessage(text);
 	} else if (strncmp(args, "haunt", 5) == 0) {
 		g_forceHaunt = true;
-		g_ctx->WriteConsoleMessage("Horrors in the Night: a haunting starts on the next game frame (needs undead in this area, not in town).");
+		g_ctx->WriteConsoleMessage("Horrors in the Night: a haunting starts on the next game frame (not in town).");
 	} else if (strncmp(args, "strike", 6) == 0) {
 		g_forceStrike = true;
 		g_ctx->WriteConsoleMessage("Horrors in the Night: lightning strike.");
 	} else {
-		snprintf(text, sizeof(text), "Horrors in the Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, level %d. Commands: horror spawn | strike | status",
+		snprintf(text, sizeof(text), "Horrors in the Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, level %d. Commands: horror spawn | haunt | strike | status",
 			g_serverReady.load() ? "on" : "off", g_diabloDead.load() ? ", stopped: Diablo is dead" : "", g_aliveCount.load(), g_totalSpawned.load(), g_totalDrains.load(), g_classes[1].count, g_classes[2].count,
 			g_classes[3].count, g_lightningRow[3], g_overlay != nullptr ? "on" : "off", g_level.load());
 		g_ctx->WriteConsoleMessage(text);
@@ -2512,7 +2577,7 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
 	.name        = "Horrors in the Night",
-	.version     = "1.0.0",
+	.version     = "1.0.5",
 	.author      = "Latedozer",
 	.description = "Phantom monsters that cannot be killed and vanish on a timer, plus lightning and thunder.",
 	.flags       = D2RL::PluginFlags::Shared | D2RL::PluginFlags::NativeHooks,

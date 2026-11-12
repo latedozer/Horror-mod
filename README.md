@@ -8,7 +8,7 @@ A horror overhaul for **Diablo II: Resurrected** (Reign of the Warlock, D2R 3.3/
 | `d2rmm-mod/HorrorNight` | A [D2RMM](https://github.com/olegbl/d2rmm) mod that changes game data: lighting, fog, sound volumes, phantom monster rows, the lightning bolt | D2RMM 1.8+ |
 | `plugin/` | A D2RLoader plugin (`d2rl-horror-night.dll`) that drives everything that happens at run time | D2RLoader with plugin ABI 4 |
 
-The mod works on its own (darker world, fog, sound mix). Phantoms, hauntings, lightning, real weather
+The mod works on its own (darker world, fog). Phantoms, hauntings, lightning, real weather
 and the whispers need the plugin as well.
 
 ## What it does

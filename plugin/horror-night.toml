@@ -48,6 +48,7 @@ volume = 60
 
 [storm]
 # Lightning flashes and thunder in the rainy outdoor areas (Acts 1 and 3).
+# Off whenever [weather] is off.
 enabled = true
 # Seconds between lightning strikes (random between the two).
 min_interval = 15
@@ -65,6 +66,8 @@ bolts_per_hit = 1
 bolt_spread = 16
 # Nearest a normal bolt lands from you, in tiles.
 bolt_min_distance = 7
+# Lightning can strike you at all (false: bolts only land around you).
+direct_hits = true
 # Percent of strikes that land right on you.
 direct_hit_chance = 6
 # A direct hit removes a random percent of your MAXIMUM life between these two.

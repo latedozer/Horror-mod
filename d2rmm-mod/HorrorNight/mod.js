@@ -10,10 +10,15 @@ const RAIN_VFX = 'data/hd/vfx/particles/env/common/weather/Rain.particles';
 const SNOW_VFX = 'data/hd/vfx/particles/env/common/weather/Snow.particles';
 const STAGES = ['dawn1', 'dawn2', 'day', 'dusk1', 'dusk2', 'night'];
 
-const keep = 1 - Math.min(Math.max(config.darkness, 0), 95) / 100; // fraction of ambient light kept
-const keyCap = config.keyLightCap;
-const monsterKeep = Math.min(Math.max(config.monsterVisibility, 0), 100) / 100;
-const radiusScale = config.lightRadiusScale / 100;
+// Every feature sits in a config section with its own on/off checkbox.
+const darknessOn = config.darknessEnabled !== false;
+const keep = darknessOn ? 1 - Math.min(Math.max(config.darkness, 0), 95) / 100 : 1; // fraction of ambient light kept
+const keyCap = darknessOn ? config.keyLightCap : Infinity;
+const monsterKeep = darknessOn ? Math.min(Math.max(config.monsterVisibility, 0), 100) / 100 : 1;
+const radiusScale = config.lightRadiusEnabled !== false ? config.lightRadiusScale / 100 : 1;
+const alwaysNight = darknessOn && config.alwaysNight;
+const weatherOn = config.weatherEnabled !== false;
+const lightningOn = weatherOn && config.lightning;
 
 function visPath(name) {
   return 'hd\\env\\vis\\' + name + '.json';
@@ -31,7 +36,7 @@ function light(def, name) {
 // Permanent rain or snow: the lighting profile's own screen-space effect slot
 // (vanilla uses it for the Arcane Sanctuary stars). Only fills an empty slot.
 function addWeather(def, family) {
-  if (!config.alwaysWeather) return;
+  if (!weatherOn || !config.alwaysWeather) return;
   const vfx = RAIN.includes(family) ? RAIN_VFX : SNOW.includes(family) ? SNOW_VFX : null;
   const vis = entity(def, 'vis_data');
   const data = vis && vis.components[0];
@@ -45,7 +50,7 @@ function addWeather(def, family) {
 // Thicker fog: distance fog and a low ground fog, in a dark blue-grey so it swallows
 // light instead of glowing. Never thins fog an area already has.
 function addFog(def) {
-  const amount = Math.min(Math.max(config.fogAmount, 0), 100) / 100;
+  const amount = weatherOn && config.fogEnabled !== false ? Math.min(Math.max(config.fogAmount, 0), 100) / 100 : 0;
   const vis = entity(def, 'vis_data');
   const data = vis && vis.components[0];
   if (!data || amount <= 0) return;
@@ -106,12 +111,12 @@ function makeFlash(def, night) {
 
 FAMILIES.forEach((family) => {
   const isTown = TOWNS.includes(family);
-  const amount = isTown && config.gentleTowns ? Math.max(keep, 0.8) : keep;
+  const amount = isTown && darknessOn && config.gentleTowns ? Math.max(keep, 0.8) : keep;
   const night = D2RMM.readJson(visPath(family + '_night'));
   if (!night || !night.entities) return;
   STAGES.forEach((stage) => {
     let out;
-    if (config.alwaysNight || stage === 'night') {
+    if (alwaysNight || stage === 'night') {
       out = JSON.parse(JSON.stringify(night));
       if (stage !== 'night') {
         // keep the original entity ids of the file being replaced
@@ -127,7 +132,7 @@ FAMILIES.forEach((family) => {
     darken(out, amount);
     addFog(out);
     addWeather(out, family);
-    if (stage === 'day' && config.skyFlash && config.alwaysNight && (RAIN.includes(family) || SNOW.includes(family))) {
+    if (stage === 'day' && lightningOn && config.skyFlash && alwaysNight && (RAIN.includes(family) || SNOW.includes(family))) {
       makeFlash(out, night);
     }
     D2RMM.writeJson(visPath(family + '_' + stage), out);
@@ -313,7 +318,7 @@ if (config.phantoms) {
 // plugin drops near you during storms. No skill, no damage, hits nothing; it
 // only shows the bolt, cracks, and lights the area around it.
 // The plugin finds the row by Param4 = 7777 and Param5 = 4242.
-if (config.lightning) {
+if (lightningOn) {
   const missilesFile = 'global\\excel\\missiles.txt';
   const missiles = D2RMM.readTsv(missilesFile);
   const base = missiles.rows.find((r) => r.Missile === 'thunderstorm1');
@@ -362,23 +367,4 @@ if (config.lightning) {
       D2RMM.writeJson(hdFile, hd);
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Sound: music steps back, the world's own ambience (wind, drips, distant noises)
-// steps forward. Only the volume columns change.
-if (config.musicVolume !== 100 || config.ambientVolume !== 100) {
-  const soundsFile = 'global\\excel\\sounds.txt';
-  const sounds = D2RMM.readTsv(soundsFile);
-  const scale = (row, percent) => {
-    for (const column of ['Volume Min', 'Volume Max']) {
-      const value = Number(row[column]);
-      if (row[column] !== '' && !Number.isNaN(value)) row[column] = String(Math.max(0, Math.min(255, Math.round((value * percent) / 100))));
-    }
-  };
-  sounds.rows.forEach((row) => {
-    if (row.IsMusic === '1') scale(row, config.musicVolume);
-    else if (row.IsAmbientScene === '1' || row.IsAmbientEvent === '1') scale(row, config.ambientVolume);
-  });
-  D2RMM.writeTsv(soundsFile, sounds);
 }
