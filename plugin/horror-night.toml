@@ -1,6 +1,6 @@
 # Horrors in the Night plugin. Close the game before editing; changes apply on the next start.
 # Every setting can also be changed in game with I Hate TOMLs.
-# Console (Ctrl + `): "horror status", "horror spawn", "horror strike", "horror haunt".
+# Console (Ctrl + `): "horror status", "horror spawn", "horror strike", "horror haunt", "horror sand".
 
 [phantoms]
 # False monsters: they cannot be killed, their hits drain life but never kill,
@@ -36,6 +36,59 @@ false_health = true
 enabled = true
 # How heavy, 5-100.
 intensity = 100
+
+[sandstorm]
+# Sandstorms in the Act 2 desert: the air fills with sand-coloured fog, dust blows past and
+# the wind rises. Needs the mod's "Sandstorms in Act 2" option (with Always night on).
+enabled = true
+# Seconds of calm between storms (random between the two).
+min_calm = 60
+max_calm = 240
+# Seconds a storm blows (random between the two).
+min_length = 45
+max_length = 120
+# Seconds a storm takes to roll in, and to die down.
+fade = 8
+# How far the storm look goes at its height, 10-100.
+strength = 100
+# The storm never stops while you are in the desert. Set to false for storms that come and
+# go: the calm and storm times above are only used then.
+always = true
+# Blowing sand: 0 = none, 100 = on.
+dust = 100
+# What the blowing sand is made of: up to three of the game's own Act 2 sand effects, layered.
+# They come in one after another as a storm builds, the third at its height. 0 = none.
+# The same number twice stacks that effect for a thicker storm ("horror fx 5 5 5").
+# "horror fx" in the console lists the numbers; "horror fx 6 5 3" sets all three while you
+# watch a storm, so you can try them without restarting.
+#   1 haze, gusting            4 huge clouds, steady          7 sand wall, outer
+#   2 haze, scattered gusts    5 huge clouds, now and then    8 sand wall
+#   3 haze, steady             6 thin sand, steady            9 ribbons, tall
+layer1 = 6
+layer2 = 5
+layer3 = 3
+# Each effect is a patch a few tiles across that stays where it is put, so a storm lays them
+# out on a grid around you and moves the grid as you walk. How far out the grid goes, in
+# patches (1 = 3 by 3 of each effect, 2 = 5 by 5, up to 5 = 11 by 11; more costs frame rate), and the distance
+# between patches in sub-tiles (smaller is denser, larger reaches further).
+# "horror field 2 20" in the console sets both while you watch.
+field_radius = 5
+field_spacing = 17
+# Patches created per second while the field is being laid out (as a storm builds, and ahead
+# of you as you walk), 1-100. Low lets the sand creep in, high fills it in at once. A dense
+# field needs a high rate to keep up with you running: about 25 a second for every effect at
+# 7 sub-tiles apart and 3 patches out.
+# The console takes it as a third number: "horror field 2 20 8".
+field_rate = 30
+# While you move, the field leans ahead of you so that new sand has time to build up before
+# you reach it: 0 keeps it centred on you, 100 puts you at its back edge. Fourth number of
+# "horror field". If the storm thins out as you run, make the field reach further (more
+# patches out, or wider spacing) rather than only raising the rate.
+field_lead = 50
+# Wind loudness, 0-300.
+wind_volume = 70
+# Muffled wind in Lut Gholein and underground while a storm blows.
+indoor_wind = true
 
 [sounds]
 # Breathing, moans, distant screams and ravens (three calls) at random moments outside town.
@@ -75,7 +128,6 @@ direct_hit_chance = 6
 direct_hit_damage_min = 5
 direct_hit_damage_max = 10
 # Light up the whole scene on a strike (needs the mod's "Lightning lights the whole sky" option).
-# While this is on the plugin also holds the game on night.
 sky_flash = true
 # Peak brightness of that flash, 0-100.
 sky_flash_strength = 100

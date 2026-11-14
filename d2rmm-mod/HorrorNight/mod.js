@@ -1,5 +1,6 @@
 // Horrors in the Night - always night, darker world, light radius matters.
-// Only touches HD lighting profiles (data/hd/env/vis). Weather (rain/snow) is untouched.
+// The look is all in the HD lighting profiles (data/hd/env/vis). The rest is data for the
+// Horrors in the Night plugin: phantom monster rows, the lightning bolt, and a table of levels.
 const FAMILIES = ["act1_barracks", "act1_campfire", "act1_catacombs", "act1_cathedral", "act1_caves", "act1_court", "act1_crypt", "act1_outdoors", "act1_tristram", "act2_arcane", "act2_bigcliff", "act2_maggot", "act2_outdoors", "act2_palace", "act2_palace_cells", "act2_palace_clean", "act2_ruin", "act2_sewer", "act2_tomb", "act2_town", "act3_docktown", "act3_jungle", "act3_jungle_dungeon", "act3_kurast", "act3_kurast_stone_tile", "act3_sewer", "act3_spider", "act3_temple", "act3_travincal", "act4_diab", "act4_fort", "act4_lava", "act4_mesa", "expansion_baallair", "expansion_baallair_throneroom", "expansion_icecave", "expansion_mountaintop", "expansion_ruins", "expansion_ruins_snow", "expansion_siege", "expansion_siege_town", "expansion_town", "expansion_wildtemple", "expansion_wildtemple_tempenter", "uberarreatsummit"];
 const SINGLES = ["act1_barracks_desecrated", "act1_catacombs_desecrated", "act1_caves_desecrated", "act1_court_desecrated", "act1_crypt_desecrated", "act1_outdoors_desecrated", "act1_outdoors_interior01_vis", "act2_arcane_desecrated", "act2_maggot_desecrated", "act2_palace_cells_desecrated", "act2_palace_desecrated", "act2_sewer_desecrated", "act2_tainted_sun", "act2_tomb_desecrated", "act2_town_desecrated", "act2_town_interior_vis", "act3_docktown_desecrated", "act3_jungle_dungeon_desecrated", "act3_sewer_desecrated", "act3_spider_desecrated", "act3_temple_desecrated", "act3_travincal_desecrated", "act4_fort_interior_vis", "act4_lava_desecrated", "act4_mesa_desecrated", "denofevil_vis", "diabloappears_vis", "expansion_baallair_throneroom_desecrated", "expansion_icecave_desecrated", "expansion_mountaintop_desecrated", "expansion_siege_desecrated", "expansion_wildtemple_desecrated", "expansion_wildtemple_tempenter_desecrated", "uberarreatsummit_desecrated", "visbox_act1_cathedral_vis", "visbox_docktown_interior01_vis", "visbox_harrograth_vis", "visbox_kurast_hut_ambient_vis", "visbox_kurast_temple_ambient_vis", "visbox_monastry_vis", "visbox_tempenter_darkness_vis", "visbox_tempenter_roof_vis", "visbox_tower_vis"];
 const TOWNS = ["act2_town", "act3_docktown", "act4_fort", "expansion_town", "expansion_siege_town"];
@@ -8,6 +9,8 @@ const RAIN = ['act1_outdoors', 'act1_court', 'act1_tristram', 'act3_jungle', 'ac
 const SNOW = ['expansion_siege', 'expansion_siege_town', 'expansion_town', 'expansion_mountaintop', 'expansion_ruins', 'expansion_ruins_snow', 'expansion_wildtemple_tempenter', 'uberarreatsummit'];
 const RAIN_VFX = 'data/hd/vfx/particles/env/common/weather/Rain.particles';
 const SNOW_VFX = 'data/hd/vfx/particles/env/common/weather/Snow.particles';
+// lighting families of the Act 2 desert: Lut Gholein's (the open desert uses it too) and the Lost City's
+const SAND = ['act2_town', 'act2_ruin'];
 const STAGES = ['dawn1', 'dawn2', 'day', 'dusk1', 'dusk2', 'night'];
 
 // Every feature sits in a config section with its own on/off checkbox.
@@ -19,6 +22,10 @@ const radiusScale = config.lightRadiusEnabled !== false ? config.lightRadiusScal
 const alwaysNight = darknessOn && config.alwaysNight;
 const weatherOn = config.weatherEnabled !== false;
 const lightningOn = weatherOn && config.lightning;
+// both of these turn an area's "day" profile into something else, so they need Always night
+const flashOn = lightningOn && config.skyFlash && alwaysNight;
+const sandOn = config.sandstormEnabled !== false && alwaysNight;
+const sandThick = Math.min(Math.max(Number.isFinite(config.sandThickness) ? config.sandThickness : 60, 10), 100) / 100;
 
 function visPath(name) {
   return 'hd\\env\\vis\\' + name + '.json';
@@ -109,6 +116,39 @@ function makeFlash(def, night) {
   }
 }
 
+// Sandstorm: like the sky flash, this takes over the "day" profile, which nobody sees under
+// Always night. For the Act 2 desert it becomes the height of a storm: the air turns to
+// sand-coloured fog that closes in, the wind picks up and your light reaches less far. The
+// plugin fades it in and out. Without the plugin the game's own clock would show it at midday.
+function makeSandstorm(def) {
+  const vis = entity(def, 'vis_data');
+  const data = vis && vis.components[0];
+  if (!data) return;
+  if (typeof data.depthFogDensity === 'number') {
+    data.depthFogColor = { x: 0.3, y: 0.22, z: 0.12 }; // the wall of dust further off
+    data.depthFogDensity = Math.max(data.depthFogDensity, 1 + 2.5 * sandThick);
+  }
+  if (typeof data.heightFogDensity === 'number') {
+    data.heightFogColor = { x: 0.36, y: 0.27, z: 0.15 }; // dust along the ground, caught by your light
+    data.heightFogDensity = Math.max(data.heightFogDensity, 0.5 + 1.5 * sandThick);
+    if (!(data.heightFogPlane > 0)) data.heightFogPlane = 5;
+  }
+  if (typeof data.windScale === 'number') data.windScale = 1.5; // the strongest any vanilla area uses
+  if (typeof data.playerUnitLightDistanceScaler === 'number') data.playerUnitLightDistanceScaler *= 1 - 0.3 * sandThick;
+  const key = light(def, 'global_key_light');
+  if (key) key.color = { x: 0.85, y: 0.62, z: 0.36 }; // moonlight through dust
+  // The renderer also has a volumetric fog that no vanilla area switches on. Off unless asked for.
+  if (config.sandVolumetric && typeof data.fogDensity === 'number') {
+    data.fogDensity = sandThick;
+    data.fogDiffuse = { x: 0.6, y: 0.45, z: 0.25 };
+    data.fogWind = 0.5;
+    data.fogChurnStrength = 0.5;
+    data.fogWispiness = 0.4;
+    data.fogPlayerRadius = 6;
+    data.fogPlayerFade = 0.5;
+  }
+}
+
 FAMILIES.forEach((family) => {
   const isTown = TOWNS.includes(family);
   const amount = isTown && darknessOn && config.gentleTowns ? Math.max(keep, 0.8) : keep;
@@ -132,8 +172,11 @@ FAMILIES.forEach((family) => {
     darken(out, amount);
     addFog(out);
     addWeather(out, family);
-    if (stage === 'day' && lightningOn && config.skyFlash && alwaysNight && (RAIN.includes(family) || SNOW.includes(family))) {
+    if (stage === 'day' && flashOn && (RAIN.includes(family) || SNOW.includes(family))) {
       makeFlash(out, night);
+    }
+    if (stage === 'day' && sandOn && SAND.includes(family)) {
+      makeSandstorm(out);
     }
     D2RMM.writeJson(visPath(family + '_' + stage), out);
   });
@@ -157,8 +200,9 @@ SINGLES.forEach((name) => {
 // damage (the plugin drains a share of current life per hit instead), has no skills,
 // gives nothing, and cannot be revived.
 // How the plugin recognises them: aip8 = 7777, aip8(N) = the row number of the
-// monster it imitates, aip8(H) = 7777. Which monsters belong to which level is
-// written to global\excel\d2rloader\horror-night\levels.tsv.
+// monster it imitates, aip8(H) = 7777. Which monsters belong to which level goes
+// into the level table at the end of this file.
+const levelMonsters = new Map(); // level id -> [monstats row numbers on Normal, on Nightmare/Hell]
 if (config.phantoms) {
   const DIFFS = ['', '(N)', '(H)'];
   const MISSILES = ['MissA1', 'MissA2', 'MissS1', 'MissS2', 'MissS3', 'MissS4', 'MissC', 'MissSQ'];
@@ -305,8 +349,7 @@ if (config.phantoms) {
     }
   }
 
-  const lines = perLevel.map((l) => [l.id, l.normal.map((id) => rowNumber.get(id)).join(','), l.hell.map((id) => rowNumber.get(id)).join(',')].join('\t'));
-  D2RMM.writeTxt('global\\excel\\d2rloader\\horror-night\\levels.tsv', 'level\tnormal\tnightmare_hell\r\n' + lines.join('\r\n') + '\r\n');
+  perLevel.forEach((l) => levelMonsters.set(l.id, [l.normal.map((id) => rowNumber.get(id)), l.hell.map((id) => rowNumber.get(id))]));
 
   D2RMM.writeTsv(monstatsFile, monstats);
   D2RMM.writeTsv(monstats2File, monstats2);
@@ -367,4 +410,68 @@ if (lightningOn) {
       D2RMM.writeJson(hdFile, hd);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// The level table for the plugin: global\excel\d2rloader\horror-night\levels.tsv.
+//   #mod line: which of this mod's options the install was built with, so the plugin only
+//              holds the game on night, flashes the sky or raises a sandstorm when the
+//              lighting for it is really there.
+//   per level: its phantom monsters on Normal and on Nightmare/Hell, then
+//     weather  what falls there: 0 nothing, 1 rain, 2 snow, 3 sand (a desert, for sandstorms)
+//     town     1 for a town
+//     under    for a level with no weather of its own, what falls outside it (same numbers):
+//              muffled thunder underground, muffled wind in Lut Gholein and the tombs
+// Rain or snow is the game's own Rain column; which of the two, and what is "outside", follows
+// the act the level's map type belongs to (Uber Tristram is an Act 5 level built from Act 1's
+// Tristram: it rains there).
+{
+  const levels = D2RMM.readTsv('global\\excel\\levels.txt');
+  const optional = (file) => {
+    try {
+      return D2RMM.readTsv(file);
+    } catch (e) {
+      return null;
+    }
+  };
+  const types = optional('global\\excel\\lvltypes.txt');
+  const actinfo = optional('global\\excel\\actinfo.txt');
+
+  const typeAct = new Map();
+  const typeName = new Map();
+  ((types && types.rows) || []).forEach((t) => {
+    if (!/^\d+$/.test(t.Id || '')) return;
+    typeAct.set(t.Id, Number(t.Act));
+    typeName.set(t.Id, t.Name);
+  });
+  const actOfType = (type) => {
+    if (typeAct.has(type)) return typeAct.get(type);
+    const n = Number(type); // vanilla numbering, should lvltypes.txt be unreadable
+    return !(n > 0) ? 0 : n <= 11 ? 1 : n <= 19 ? 2 : n <= 25 ? 3 : n <= 28 ? 4 : 5;
+  };
+  const nameOfType = (type) => typeName.get(type) || (type === '16' ? 'Act 2 - Desert' : type === '19' ? 'Act 2 - Arcane' : '');
+  const towns = new Set(((actinfo && actinfo.rows) || []).map((a) => a.town).filter(Boolean));
+  if (!towns.size) ['Act 1 - Town', 'Act 2 - Town', 'Act 3 - Town', 'Act 4 - Town', 'Act 5 - Town'].forEach((t) => towns.add(t));
+
+  const lines = [];
+  levels.rows.forEach((level) => {
+    if (!/^\d+$/.test(level.Id || '') || level.Id === '0') return;
+    const act = actOfType(level.LevelType);
+    const type = nameOfType(level.LevelType);
+    const town = towns.has(level.Name);
+    let weather = 0;
+    let under = 0;
+    if (level.Rain === '1') weather = act === 5 ? 2 : 1;
+    else if (type === 'Act 2 - Desert' && !town) weather = 3;
+    else if (act === 1 || act === 3) under = 1;
+    else if (act === 5) under = 2;
+    else if (act === 2 && type !== 'Act 2 - Arcane') under = 3;
+    const monsters = levelMonsters.get(level.Id) || [[], []];
+    lines.push([level.Id, monsters[0].join(','), monsters[1].join(','), weather, town ? 1 : 0, under].join('\t'));
+  });
+  const options = ['#mod', 'alwaysNight=' + (alwaysNight ? 1 : 0), 'skyFlash=' + (flashOn ? 1 : 0), 'sandstorm=' + (sandOn ? 1 : 0)].join('\t');
+  D2RMM.writeTxt(
+    'global\\excel\\d2rloader\\horror-night\\levels.tsv',
+    options + '\r\nlevel\tnormal\tnightmare_hell\tweather\ttown\tunder\r\n' + lines.join('\r\n') + '\r\n'
+  );
 }

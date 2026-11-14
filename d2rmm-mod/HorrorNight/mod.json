@@ -1,8 +1,8 @@
 {
   "name": "Horrors in the Night",
-  "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horrors in the Night plugin) phantom monsters, lightning and thunder.",
+  "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horrors in the Night plugin) phantom monsters, lightning and thunder, and sandstorms in the Act 2 desert.",
   "author": "Latedozer",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "config": [
     {
       "id": "darknessEnabled",
@@ -160,6 +160,32 @@
               ]
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "sandstormEnabled",
+      "type": "section",
+      "name": "Sandstorms in Act 2 (needs the Horrors in the Night plugin)",
+      "description": "Turns the unused daytime lighting of the Act 2 desert into the height of a sandstorm, which the plugin fades in and out. Only with Always night on. Turn this off if you remove the plugin, or daytime in Act 2 will look like a permanent sandstorm.",
+      "defaultValue": true,
+      "defaultExpanded": false,
+      "children": [
+        {
+          "id": "sandThickness",
+          "type": "number",
+          "name": "Sandstorm thickness %",
+          "description": "How far the dust closes in at the height of a storm.",
+          "defaultValue": 60,
+          "minValue": 10,
+          "maxValue": 100
+        },
+        {
+          "id": "sandVolumetric",
+          "type": "checkbox",
+          "name": "Volumetric dust (experimental)",
+          "description": "Also switches on the renderer's volumetric fog during a storm. The game itself never uses it, so it may do nothing, look wrong or cost frame rate.",
+          "defaultValue": false
         }
       ]
     },

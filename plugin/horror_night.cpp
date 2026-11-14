@@ -2,6 +2,7 @@
 //   * phantoms: false monsters that cannot be killed, drain life without killing,
 //     and vanish after a random time (server side, one game-frame hook)
 //   * storm: lightning flash + thunder in rainy areas (client side, overlay + winmm)
+//   * sandstorm: the Act 2 desert's storm look fades in and out, with dust and wind
 //
 // Engine addresses are for the D2R image with PE timestamp 0x6AB3782C only.
 // Every address is byte-checked before use; on a mismatch the phantoms switch off.
@@ -22,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 
 namespace {
 
@@ -50,21 +52,44 @@ void Log(const char* format, ...) {
 	g_ctx->LogInfo(text);
 }
 
-uint64_t g_rng = 0x9E3779B97F4A7C15ULL;
+// The server tick, the client (overlay) callback and the sound mixer run on different threads,
+// so each has its own generator.
+struct Rng {
+	uint64_t state;
 
-uint32_t Rand() {
-	g_rng ^= g_rng << 13;
-	g_rng ^= g_rng >> 7;
-	g_rng ^= g_rng << 17;
-	return static_cast<uint32_t>(g_rng >> 16);
-}
-
-int RandRange(int low, int high) {
-	if (high <= low) {
-		return low;
+	uint32_t Next() {
+		state ^= state << 13;
+		state ^= state >> 7;
+		state ^= state << 17;
+		return static_cast<uint32_t>(state >> 16);
 	}
-	return low + static_cast<int>(Rand() % static_cast<uint32_t>(high - low + 1));
+
+	int Range(int low, int high) {
+		if (high <= low) {
+			return low;
+		}
+		return low + static_cast<int>(Next() % static_cast<uint32_t>(high - low + 1));
+	}
+};
+
+Rng g_rng { 0x9E3779B97F4A7C15ULL };       // server tick
+Rng g_clientRng { 0xD1B54A32D192ED03ULL }; // overlay callback
+Rng g_mixRng { 0x8CB92BA72F3D8DD7ULL };    // mixer thread
+
+void SeedRandom(uint64_t seed) {
+	for (Rng* rng : { &g_rng, &g_clientRng, &g_mixRng }) {
+		rng->state ^= seed * 0x2545F4914F6CDD1DULL;
+		if (rng->state == 0) {
+			rng->state = 1;
+		}
+		seed += 0x9E3779B97F4A7C15ULL;
+	}
 }
+
+uint32_t Rand() { return g_rng.Next(); }
+int      RandRange(int low, int high) { return g_rng.Range(low, high); }
+uint32_t ClientRand() { return g_clientRng.Next(); }
+int      ClientRange(int low, int high) { return g_clientRng.Range(low, high); }
 
 // ---------------------------------------------------------------- config
 
@@ -87,13 +112,29 @@ struct Config {
 	int weatherEnabled   = 1;  // drive the game's own rain and snow
 	int weatherIntensity = 100;
 
+	int sandEnabled      = 1;  // sandstorms in the Act 2 desert
+	int sandCalmMin      = 60; // seconds between storms...
+	int sandCalmMax      = 240;
+	int sandLengthMin    = 45; // ...and how long one blows
+	int sandLengthMax    = 120;
+	int sandFade         = 8;  // seconds a storm takes to roll in or die down
+	int sandStrength     = 100; // how much of the mod's storm look a storm reaches, percent
+	int sandAlways       = 1;  // the storm never stops (0: storms come and go on the clock above)
+	int sandDust         = 100; // blowing sand on (0 = off)
+	int sandLayer1       = 6;  // the effects that make up the blowing sand: numbers into kSandEffects,
+	int sandLayer2       = 5;  // 0 = none. They come in one after another as a storm builds.
+	int sandLayer3       = 3;  // (thin sand, then huge clouds now and then, then steady haze)
+	int sandFieldRadius  = 5;  // patches of each effect out from the one you stand in (5 = 11 x 11)
+	int sandFieldSpacing = 17; // sub-tiles between patches
+	int sandFieldRate    = 30; // patches created per second while the field is being laid out
+	int sandFieldLead    = 50; // how far the field leans ahead of a moving player, percent of its reach
+	int sandWindVolume   = 70;
+	int sandIndoorWind   = 1;  // muffled wind in town and underground while a storm blows
+
 	int ambientEnabled   = 1;
 	int ambientMin       = 70;
 	int ambientMax       = 200;
 	int ambientVolume    = 60;
-	int heartbeat        = 0;  // off: removed at the user's request (setting kept for anyone who wants it)
-	int heartbeatBelow   = 35; // percent of life
-	int heartbeatVolume  = 130;
 
 	int stormEnabled     = 1;
 	int stormMinInterval = 15;
@@ -121,6 +162,129 @@ int Clamp(int value, int low, int high) {
 	return value < low ? low : (value > high ? high : value);
 }
 
+// What a sandstorm can blow past you: the game's own particle effects, by number ("horror fx").
+// 0 means none. They are effects the game places around Lut Gholein. Each is a patch some
+// tens of sub-tiles across; a storm lays them out on a grid around you.
+struct SandEffect {
+	const char* name;
+	const char* path;
+};
+const SandEffect kSandEffects[] = {
+	{ "none", nullptr },
+	{ "haze, gusting", "data/hd/vfx/particles/env/Act2/town/FX_sandHaze_low_med_gusts.particles" },
+	{ "haze, scattered gusts", "data/hd/vfx/particles/env/Act2/town/FX_sandHaze_low_med_scatteredgusts.particles" },
+	{ "haze, steady", "data/hd/vfx/particles/env/Act2/town/FX_sandHaze_low_med.particles" },
+	{ "huge clouds, steady", "data/hd/vfx/particles/env/Act2/town/fx_sandhuge_permenant.particles" },
+	{ "huge clouds, now and then", "data/hd/vfx/particles/env/Act2/town/FX_SandHuge_Intermittent.particles" },
+	{ "thin sand, steady", "data/hd/vfx/particles/env/Act2/town/FX_SandThin_Permenant.particles" },
+	{ "sand wall, outer", "data/hd/vfx/particles/env/Act2/town/FX_Sand_Wall_outer.particles" },
+	{ "sand wall", "data/hd/vfx/particles/env/Act2/town/FX_Sand_Wall_20x40.particles" },
+	{ "ribbons, tall", "data/hd/vfx/particles/env/Act2/town/FX_SandRibbons_MoreHeight_Variance.particles" },
+};
+constexpr int kSandEffectCount = static_cast<int>(sizeof(kSandEffects) / sizeof(kSandEffects[0]));
+constexpr int kMaxLayers       = 3;
+constexpr int kMaxFieldRadius  = 5;
+
+// Every setting, once: where it lives in horror-night.toml, its limits, and (when it has a
+// label) its line in the in-game settings menu. A row without a section is a menu header.
+struct Setting {
+	const char* section;
+	const char* key;
+	int*        target;
+	bool        isBool;
+	int         min;
+	int         max;
+	int         step;
+	const char* label; // nullptr = config file only
+	const char* note;  // no double quotes: the text goes into a quoted TOML string
+};
+
+const Setting kSettings[] = {
+	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Phantoms", nullptr },
+	{ "phantoms", "enabled", &g_config.phantomsEnabled, true, 0, 1, 0, "Phantoms appear", "False monsters: they cannot be killed, their hits drain life but never kill, and they vanish." },
+	{ "phantoms", "min_interval", &g_config.minInterval, false, 5, 3600, 5, "Shortest wait (seconds)", "Time between appearances is random between the two." },
+	{ "phantoms", "max_interval", &g_config.maxInterval, false, 5, 7200, 5, "Longest wait (seconds)", nullptr },
+	{ "phantoms", "min_life", &g_config.minLife, false, 2, 600, 1, "Shortest stay (seconds)", "How long a phantom stays before it vanishes." },
+	{ "phantoms", "max_life", &g_config.maxLife, false, 2, 900, 1, "Longest stay (seconds)", nullptr },
+	{ "phantoms", "max_alive", &g_config.maxAlive, false, 1, 12, 1, "Most at once", nullptr },
+	{ "phantoms", "max_group", &g_config.maxGroup, false, 1, 12, 1, "Most appearing together", nullptr },
+	{ "phantoms", "drain_percent", &g_config.drainPercent, false, 1, 50, 1, "Life drained per hit (%)", "Percent of your current life. It can never kill." },
+	{ "phantoms", "min_distance", &g_config.minDistance, false, 4, 30, 1, "Nearest they appear (tiles)", nullptr },
+	{ "phantoms", "max_distance", &g_config.maxDistance, false, 4, 34, 1, "Farthest they appear (tiles)", nullptr },
+
+	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Hauntings", nullptr },
+	{ "haunting", "chance", &g_config.hauntChance, false, 0, 100, 1, "Haunting chance (%)", "Share of phantom appearances where one of the dead wears a townsperson's name." },
+	{ "haunting", "corpses", &g_config.riseMax, false, 0, 8, 1, "Corpses that get back up", nullptr },
+	{ "haunting", "false_health", &g_config.falseHealth, true, 0, 1, 0, "Life orb reads 1", "Only what the orb shows; your real life is untouched." },
+
+	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Weather", nullptr },
+	{ "weather", "enabled", &g_config.weatherEnabled, true, 0, 1, 0, "Always rain or snow outdoors", "Rain in Acts 1 and 3, snow in Act 5." },
+	{ "weather", "intensity", &g_config.weatherIntensity, false, 5, 100, 5, "How heavy (%)", nullptr },
+
+	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Sandstorms", nullptr },
+	{ "sandstorm", "enabled", &g_config.sandEnabled, true, 0, 1, 0, "Sandstorms in the Act 2 desert", "Needs the mod's Sandstorms in Act 2 option, with Always night on." },
+	{ "sandstorm", "min_calm", &g_config.sandCalmMin, false, 5, 3600, 5, "Shortest calm (seconds)", "Time between storms is random between the two." },
+	{ "sandstorm", "max_calm", &g_config.sandCalmMax, false, 5, 7200, 5, "Longest calm (seconds)", nullptr },
+	{ "sandstorm", "min_length", &g_config.sandLengthMin, false, 5, 3600, 5, "Shortest storm (seconds)", nullptr },
+	{ "sandstorm", "max_length", &g_config.sandLengthMax, false, 5, 7200, 5, "Longest storm (seconds)", nullptr },
+	{ "sandstorm", "fade", &g_config.sandFade, false, 1, 60, 1, "Roll-in time (seconds)", "How long a storm takes to build up, and to die down." },
+	{ "sandstorm", "strength", &g_config.sandStrength, false, 10, 100, 5, "Storm strength (%)", "How far the storm look goes at its height." },
+	{ "sandstorm", "always", &g_config.sandAlways, true, 0, 1, 0, "The storm never stops", nullptr },
+	{ "sandstorm", "dust", &g_config.sandDust, false, 0, 100, 100, "Blowing sand", "0 turns the blowing sand off, 100 on." },
+	{ "sandstorm", "layer1", &g_config.sandLayer1, false, 0, kSandEffectCount - 1, 1, "Blowing sand: first effect", "Effect numbers: type horror fx in the console for the list. 0 is none." },
+	{ "sandstorm", "layer2", &g_config.sandLayer2, false, 0, kSandEffectCount - 1, 1, "Blowing sand: second effect", "Comes in as the storm builds." },
+	{ "sandstorm", "layer3", &g_config.sandLayer3, false, 0, kSandEffectCount - 1, 1, "Blowing sand: third effect", "Comes in last, at the height of the storm." },
+	{ "sandstorm", "field_radius", &g_config.sandFieldRadius, false, 0, kMaxFieldRadius, 1, "Blowing sand: how far out (patches)", "Patches of each effect in every direction from where you stand. 1 is a 3 by 3 field, 2 is 5 by 5, up to 5 (11 by 11). More costs frame rate." },
+	{ "sandstorm", "field_spacing", &g_config.sandFieldSpacing, false, 5, 60, 1, "Blowing sand: patch spacing (sub-tiles)", "Distance between patches. Smaller is denser, larger reaches further." },
+	{ "sandstorm", "field_rate", &g_config.sandFieldRate, false, 1, 100, 1, "Blowing sand: patches created per second", "How fast the field fills in as a storm builds and as you walk. Low lets it creep in, high is all at once. A dense field needs a high rate to keep up with you running." },
+	{ "sandstorm", "field_lead", &g_config.sandFieldLead, false, 0, 100, 5, "Blowing sand: lean ahead when moving (%)", "While you move the field shifts ahead of you, so sand has time to build up before you reach it. 0 keeps it centred on you, 100 puts you at its back edge." },
+	{ "sandstorm", "wind_volume", &g_config.sandWindVolume, false, 0, 300, 5, "Wind volume (%)", nullptr },
+	{ "sandstorm", "indoor_wind", &g_config.sandIndoorWind, true, 0, 1, 0, "Muffled wind in town and underground", nullptr },
+
+	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Whispers", nullptr },
+	{ "sounds", "enabled", &g_config.ambientEnabled, true, 0, 1, 0, "Whispers and distant sounds", "Breathing, moans, screams and ravens outside town." },
+	{ "sounds", "min_interval", &g_config.ambientMin, false, 3, 3600, 5, "Shortest wait (seconds)", nullptr },
+	{ "sounds", "max_interval", &g_config.ambientMax, false, 3, 7200, 5, "Longest wait (seconds)", nullptr },
+	{ "sounds", "volume", &g_config.ambientVolume, false, 0, 300, 5, "Volume (%)", "100 is as recorded." },
+
+	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Storm", nullptr },
+	{ "storm", "enabled", &g_config.stormEnabled, true, 0, 1, 0, "Lightning and thunder", "In the rainy outdoor areas of Acts 1 and 3. Needs the weather on." },
+	{ "storm", "min_interval", &g_config.stormMinInterval, false, 3, 3600, 5, "Shortest wait (seconds)", "Time between strikes is random between the two." },
+	{ "storm", "max_interval", &g_config.stormMaxInterval, false, 3, 7200, 5, "Longest wait (seconds)", nullptr },
+	{ "storm", "volume", &g_config.volume, false, 0, 300, 5, "Thunder volume (%)", nullptr },
+	{ "storm", "sky_flash", &g_config.skyFlash, true, 0, 1, 0, "Lightning lights the whole scene", "Needs the mod's Lightning lights the whole sky option." },
+	{ "storm", "sky_flash_strength", &g_config.skyStrength, false, 0, 100, 5, "Flash brightness (%)", nullptr },
+	{ "storm", "lightning_bolts", &g_config.flashStrength, true, 0, 1, 0, "Lightning bolts", "A harmless bolt lands near you on each strike." },
+	{ "storm", "hits_min", &g_config.hitsMin, false, 1, 12, 1, "Fewest flickers per strike", nullptr },
+	{ "storm", "hits_max", &g_config.hitsMax, false, 1, 12, 1, "Most flickers per strike", nullptr },
+	{ "storm", "bolts_per_hit", &g_config.boltsPerHit, false, 1, 8, 1, "Bolts per flicker", nullptr },
+	{ "storm", "bolt_min_distance", &g_config.boltMinDistance, false, 2, 30, 1, "Nearest a bolt lands (tiles)", nullptr },
+	{ "storm", "bolt_spread", &g_config.boltSpread, false, 4, 30, 1, "Farthest a bolt lands (tiles)", nullptr },
+	{ "storm", "direct_hits", &g_config.directHits, true, 0, 1, 0, "Lightning can strike you", "Off: bolts only land around you, never on you." },
+	{ "storm", "direct_hit_chance", &g_config.directHitChance, false, 0, 100, 1, "Strikes that hit you (%)", nullptr },
+	{ "storm", "direct_hit_damage_min", &g_config.directHitDamage, false, 0, 100, 1, "Direct hit: least damage (% of max life)", "A direct hit always leaves at least 1 life." },
+	{ "storm", "direct_hit_damage_max", &g_config.directHitDamageMax, false, 0, 100, 1, "Direct hit: most damage (% of max life)", nullptr },
+	{ "storm", "snow_areas", &g_config.snowAreas, true, 0, 1, 0, "Storms in the snow of Act 5 too", nullptr },
+	{ "storm", "indoor_thunder", &g_config.indoorThunder, true, 0, 1, 0, "Muffled thunder underground", nullptr },
+	{ "storm", "screen_flash", &g_config.screenFlash, true, 0, 1, 0, "Also flash the whole screen white", "Needs a working D2RLoader overlay. It covers the interface too." },
+	// a testing knob, kept out of the menu
+	{ "storm", "bolt_row", &g_config.boltRow, false, -1, 65535, 1, nullptr, nullptr },
+};
+
+const Setting* FindSetting(const char* section, size_t sectionLength, const char* key) {
+	for (const Setting& setting : kSettings) {
+		if (setting.section != nullptr && strlen(setting.section) == sectionLength && strncmp(setting.section, section, sectionLength) == 0
+			&& strcmp(setting.key, key) == 0) {
+			return &setting;
+		}
+	}
+	return nullptr;
+}
+
+void SetSetting(const Setting& setting, int number) {
+	*setting.target = setting.isBool ? (number != 0 ? 1 : 0) : Clamp(number, setting.min, setting.max);
+}
+
 void ApplyConfigValue(const char* section, const char* key, const char* value) {
 	int number = 0;
 	if (strncmp(value, "true", 4) == 0) {
@@ -130,74 +294,44 @@ void ApplyConfigValue(const char* section, const char* key, const char* value) {
 	} else {
 		number = atoi(value);
 	}
-
-	struct Entry {
-		const char* section;
-		const char* key;
-		int*        target;
-	};
-	const Entry entries[] = {
-		{ "phantoms", "enabled", &g_config.phantomsEnabled },
-		{ "phantoms", "min_interval", &g_config.minInterval },
-		{ "phantoms", "max_interval", &g_config.maxInterval },
-		{ "phantoms", "min_life", &g_config.minLife },
-		{ "phantoms", "max_life", &g_config.maxLife },
-		{ "phantoms", "max_alive", &g_config.maxAlive },
-		{ "phantoms", "max_group", &g_config.maxGroup },
-		{ "phantoms", "drain_percent", &g_config.drainPercent },
-		{ "phantoms", "min_distance", &g_config.minDistance },
-		{ "phantoms", "max_distance", &g_config.maxDistance },
-		{ "haunting", "chance", &g_config.hauntChance },
-		{ "haunting", "corpses", &g_config.riseMax },
-		{ "haunting", "false_health", &g_config.falseHealth },
-		{ "weather", "enabled", &g_config.weatherEnabled },
-		{ "weather", "intensity", &g_config.weatherIntensity },
-		{ "sounds", "enabled", &g_config.ambientEnabled },
-		{ "sounds", "min_interval", &g_config.ambientMin },
-		{ "sounds", "max_interval", &g_config.ambientMax },
-		{ "sounds", "volume", &g_config.ambientVolume },
-		{ "sounds", "heartbeat", &g_config.heartbeat },
-		{ "sounds", "heartbeat_below", &g_config.heartbeatBelow },
-		{ "sounds", "heartbeat_volume", &g_config.heartbeatVolume },
-		{ "storm", "enabled", &g_config.stormEnabled },
-		{ "storm", "min_interval", &g_config.stormMinInterval },
-		{ "storm", "max_interval", &g_config.stormMaxInterval },
-		{ "storm", "lightning_bolts", &g_config.flashStrength },
-		{ "storm", "screen_flash", &g_config.screenFlash },
-		{ "storm", "bolt_row", &g_config.boltRow },
-		{ "storm", "hits_min", &g_config.hitsMin },
-		{ "storm", "hits_max", &g_config.hitsMax },
-		{ "storm", "bolts_per_hit", &g_config.boltsPerHit },
-		{ "storm", "bolt_spread", &g_config.boltSpread },
-		{ "storm", "bolt_min_distance", &g_config.boltMinDistance },
-		{ "storm", "direct_hits", &g_config.directHits },
-		{ "storm", "direct_hit_chance", &g_config.directHitChance },
-		{ "storm", "direct_hit_damage_min", &g_config.directHitDamage },
-		{ "storm", "direct_hit_damage_max", &g_config.directHitDamageMax },
-		{ "storm", "sky_flash", &g_config.skyFlash },
-		{ "storm", "sky_flash_strength", &g_config.skyStrength },
-		{ "storm", "volume", &g_config.volume },
-		{ "storm", "snow_areas", &g_config.snowAreas },
-		{ "storm", "indoor_thunder", &g_config.indoorThunder },
-	};
-	for (const Entry& entry : entries) {
-		if (strcmp(entry.section, section) == 0 && strcmp(entry.key, key) == 0) {
-			*entry.target = number;
-			return;
-		}
+	// keys this version does not know (from an older or newer file) are skipped
+	if (const Setting* setting = FindSetting(section, strlen(section), key)) {
+		SetSetting(*setting, number);
 	}
 }
 
-void NormalizeConfig();
-
-void LoadConfig() {
-	static char text[16384];
-	memset(text, 0, sizeof(text));
-	if (!g_ctx->ReadConfig(text, sizeof(text) - 1)) {
-		Log("config: could not read the config file, using defaults");
-		return;
+// Every value inside its limits, and the second of each pair never below the first.
+void NormalizeConfig() {
+	for (const Setting& setting : kSettings) {
+		if (setting.target != nullptr) {
+			SetSetting(setting, *setting.target);
+		}
 	}
+	const auto atLeast = [](int& value, int floor) {
+		if (value < floor) {
+			value = floor;
+		}
+	};
+	const auto atMost = [](int& value, int ceiling) {
+		if (value > ceiling) {
+			value = ceiling;
+		}
+	};
+	atLeast(g_config.maxInterval, g_config.minInterval);
+	atLeast(g_config.maxLife, g_config.minLife);
+	atLeast(g_config.maxDistance, g_config.minDistance);
+	atLeast(g_config.sandCalmMax, g_config.sandCalmMin);
+	atLeast(g_config.sandLengthMax, g_config.sandLengthMin);
+	atLeast(g_config.ambientMax, g_config.ambientMin);
+	atLeast(g_config.stormMaxInterval, g_config.stormMinInterval);
+	atLeast(g_config.hitsMax, g_config.hitsMin);
+	atLeast(g_config.directHitDamageMax, g_config.directHitDamage);
+	atMost(g_config.maxGroup, g_config.maxAlive);
+	atMost(g_config.boltMinDistance, g_config.boltSpread);
+}
 
+// Reads the text of horror-night.toml into g_config. The text is cut up while it is read.
+void ParseConfig(char* text) {
 	char  section[64] = "";
 	char* line        = text;
 	while (*line != '\0') {
@@ -240,41 +374,17 @@ void LoadConfig() {
 		}
 		line = end + 1;
 	}
-
 	NormalizeConfig();
 }
 
-void NormalizeConfig() {
-	g_config.minInterval      = Clamp(g_config.minInterval, 5, 3600);
-	g_config.maxInterval      = Clamp(g_config.maxInterval, g_config.minInterval, 7200);
-	g_config.minLife          = Clamp(g_config.minLife, 2, 600);
-	g_config.maxLife          = Clamp(g_config.maxLife, g_config.minLife, 900);
-	g_config.maxAlive         = Clamp(g_config.maxAlive, 1, 12);
-	g_config.maxGroup         = Clamp(g_config.maxGroup, 1, g_config.maxAlive);
-	g_config.drainPercent     = Clamp(g_config.drainPercent, 1, 50);
-	g_config.minDistance      = Clamp(g_config.minDistance, 4, 30);
-	g_config.maxDistance      = Clamp(g_config.maxDistance, g_config.minDistance, 34);
-	g_config.hauntChance      = Clamp(g_config.hauntChance, 0, 100);
-	g_config.riseMax          = Clamp(g_config.riseMax, 0, 8);
-	g_config.weatherIntensity = Clamp(g_config.weatherIntensity, 5, 100);
-	g_config.ambientMin       = Clamp(g_config.ambientMin, 3, 3600);
-	g_config.ambientMax       = Clamp(g_config.ambientMax, g_config.ambientMin, 7200);
-	g_config.ambientVolume    = Clamp(g_config.ambientVolume, 0, 300);
-	g_config.heartbeatBelow   = Clamp(g_config.heartbeatBelow, 1, 100);
-	g_config.heartbeatVolume  = Clamp(g_config.heartbeatVolume, 0, 300);
-	g_config.stormMinInterval = Clamp(g_config.stormMinInterval, 3, 3600);
-	g_config.stormMaxInterval = Clamp(g_config.stormMaxInterval, g_config.stormMinInterval, 7200);
-	g_config.flashStrength    = Clamp(g_config.flashStrength, 0, 1);
-	g_config.volume           = Clamp(g_config.volume, 0, 300);
-	g_config.hitsMin          = Clamp(g_config.hitsMin, 1, 12);
-	g_config.hitsMax          = Clamp(g_config.hitsMax, g_config.hitsMin, 12);
-	g_config.boltsPerHit      = Clamp(g_config.boltsPerHit, 1, 8);
-	g_config.boltSpread       = Clamp(g_config.boltSpread, 4, 30);
-	g_config.boltMinDistance  = Clamp(g_config.boltMinDistance, 2, g_config.boltSpread);
-	g_config.directHitChance  = Clamp(g_config.directHitChance, 0, 100);
-	g_config.directHitDamage  = Clamp(g_config.directHitDamage, 0, 100);
-	g_config.directHitDamageMax = Clamp(g_config.directHitDamageMax, g_config.directHitDamage, 100);
-	g_config.skyStrength      = Clamp(g_config.skyStrength, 0, 100);
+void LoadConfig() {
+	static char text[32768];
+	memset(text, 0, sizeof(text));
+	if (!g_ctx->ReadConfig(text, sizeof(text) - 1)) {
+		Log("config: could not read horror-night.toml (missing, or larger than %u bytes) - using the defaults", static_cast<unsigned>(sizeof(text) - 1));
+		return;
+	}
+	ParseConfig(text);
 }
 
 // ---------------------------------------------------------------- I Hate TOMLs
@@ -286,67 +396,6 @@ void NormalizeConfig() {
 //   get(key, out, outSize) -> found      set(key, value, error, errorSize) -> accepted
 // Every change is applied at once and written back to horror-night.toml.
 
-struct MenuRow {
-	const char* section; // nullptr = a header line
-	const char* key;
-	int*        target;
-	bool        isBool;
-	const char* label;
-	const char* note;
-	int         min;
-	int         max;
-	int         step;
-};
-
-const MenuRow kMenu[] = {
-	{ nullptr, nullptr, nullptr, false, "Phantoms", nullptr, 0, 0, 0 },
-	{ "phantoms", "enabled", &g_config.phantomsEnabled, true, "Phantoms appear", "False monsters: they cannot be killed, their hits drain life but never kill, and they vanish.", 0, 0, 0 },
-	{ "phantoms", "min_interval", &g_config.minInterval, false, "Shortest wait (seconds)", "Time between appearances is random between the two.", 5, 3600, 5 },
-	{ "phantoms", "max_interval", &g_config.maxInterval, false, "Longest wait (seconds)", nullptr, 5, 7200, 5 },
-	{ "phantoms", "min_life", &g_config.minLife, false, "Shortest stay (seconds)", "How long a phantom stays before it vanishes.", 2, 600, 1 },
-	{ "phantoms", "max_life", &g_config.maxLife, false, "Longest stay (seconds)", nullptr, 2, 900, 1 },
-	{ "phantoms", "max_alive", &g_config.maxAlive, false, "Most at once", nullptr, 1, 12, 1 },
-	{ "phantoms", "max_group", &g_config.maxGroup, false, "Most appearing together", nullptr, 1, 12, 1 },
-	{ "phantoms", "drain_percent", &g_config.drainPercent, false, "Life drained per hit (%)", "Percent of your current life. It can never kill.", 1, 50, 1 },
-	{ "phantoms", "min_distance", &g_config.minDistance, false, "Nearest they appear (tiles)", nullptr, 4, 30, 1 },
-	{ "phantoms", "max_distance", &g_config.maxDistance, false, "Farthest they appear (tiles)", nullptr, 4, 34, 1 },
-
-	{ nullptr, nullptr, nullptr, false, "Hauntings", nullptr, 0, 0, 0 },
-	{ "haunting", "chance", &g_config.hauntChance, false, "Haunting chance (%)", "Share of phantom appearances where one of the dead wears a townsperson's name.", 0, 100, 1 },
-	{ "haunting", "corpses", &g_config.riseMax, false, "Corpses that get back up", nullptr, 0, 8, 1 },
-	{ "haunting", "false_health", &g_config.falseHealth, true, "Life orb reads 1", "Only what the orb shows; your real life is untouched.", 0, 0, 0 },
-
-	{ nullptr, nullptr, nullptr, false, "Weather", nullptr, 0, 0, 0 },
-	{ "weather", "enabled", &g_config.weatherEnabled, true, "Always rain or snow outdoors", "Rain in Acts 1 and 3, snow in Act 5.", 0, 0, 0 },
-	{ "weather", "intensity", &g_config.weatherIntensity, false, "How heavy (%)", nullptr, 5, 100, 5 },
-
-	{ nullptr, nullptr, nullptr, false, "Whispers", nullptr, 0, 0, 0 },
-	{ "sounds", "enabled", &g_config.ambientEnabled, true, "Whispers and distant sounds", "Breathing, moans, screams and ravens outside town.", 0, 0, 0 },
-	{ "sounds", "min_interval", &g_config.ambientMin, false, "Shortest wait (seconds)", nullptr, 3, 3600, 5 },
-	{ "sounds", "max_interval", &g_config.ambientMax, false, "Longest wait (seconds)", nullptr, 3, 7200, 5 },
-	{ "sounds", "volume", &g_config.ambientVolume, false, "Volume (%)", "100 is as recorded.", 0, 300, 5 },
-
-	{ nullptr, nullptr, nullptr, false, "Storm", nullptr, 0, 0, 0 },
-	{ "storm", "enabled", &g_config.stormEnabled, true, "Lightning and thunder", "In the rainy outdoor areas of Acts 1 and 3. Needs the weather on.", 0, 0, 0 },
-	{ "storm", "min_interval", &g_config.stormMinInterval, false, "Shortest wait (seconds)", "Time between strikes is random between the two.", 3, 3600, 5 },
-	{ "storm", "max_interval", &g_config.stormMaxInterval, false, "Longest wait (seconds)", nullptr, 3, 7200, 5 },
-	{ "storm", "volume", &g_config.volume, false, "Thunder volume (%)", nullptr, 0, 300, 5 },
-	{ "storm", "sky_flash", &g_config.skyFlash, true, "Lightning lights the whole scene", "Also holds the game on night.", 0, 0, 0 },
-	{ "storm", "sky_flash_strength", &g_config.skyStrength, false, "Flash brightness (%)", nullptr, 0, 100, 5 },
-	{ "storm", "lightning_bolts", &g_config.flashStrength, true, "Lightning bolts", "A harmless bolt lands near you on each strike.", 0, 0, 0 },
-	{ "storm", "hits_min", &g_config.hitsMin, false, "Fewest flickers per strike", nullptr, 1, 12, 1 },
-	{ "storm", "hits_max", &g_config.hitsMax, false, "Most flickers per strike", nullptr, 1, 12, 1 },
-	{ "storm", "bolts_per_hit", &g_config.boltsPerHit, false, "Bolts per flicker", nullptr, 1, 8, 1 },
-	{ "storm", "bolt_min_distance", &g_config.boltMinDistance, false, "Nearest a bolt lands (tiles)", nullptr, 2, 30, 1 },
-	{ "storm", "bolt_spread", &g_config.boltSpread, false, "Farthest a bolt lands (tiles)", nullptr, 4, 30, 1 },
-	{ "storm", "direct_hits", &g_config.directHits, true, "Lightning can strike you", "Off: bolts only land around you, never on you.", 0, 0, 0 },
-	{ "storm", "direct_hit_chance", &g_config.directHitChance, false, "Strikes that hit you (%)", nullptr, 0, 100, 1 },
-	{ "storm", "direct_hit_damage_min", &g_config.directHitDamage, false, "Direct hit: least damage (% of max life)", "A direct hit always leaves at least 1 life.", 0, 100, 1 },
-	{ "storm", "direct_hit_damage_max", &g_config.directHitDamageMax, false, "Direct hit: most damage (% of max life)", nullptr, 0, 100, 1 },
-	{ "storm", "snow_areas", &g_config.snowAreas, true, "Storms in the snow of Act 5 too", nullptr, 0, 0, 0 },
-	{ "storm", "indoor_thunder", &g_config.indoorThunder, true, "Muffled thunder underground", nullptr, 0, 0, 0 },
-};
-
 struct MenuRegistration {
 	uint32_t    structSize;
 	uint32_t    flags;
@@ -356,75 +405,81 @@ struct MenuRegistration {
 	void* reserved;
 };
 
-char             g_menuText[12288];
+char             g_menuText[24576];
 MenuRegistration g_menuRegistration {};
 bool             g_menuJoined = false;
 
-const MenuRow* MenuFind(const char* key) {
+// Menu keys are "<section>_<key>".
+const Setting* MenuFind(const char* key) {
 	if (key == nullptr) {
 		return nullptr;
 	}
-	for (const MenuRow& row : kMenu) {
-		if (row.section == nullptr) {
+	for (const Setting& setting : kSettings) {
+		if (setting.section == nullptr || setting.label == nullptr) {
 			continue;
 		}
-		const size_t sectionLength = strlen(row.section);
-		if (strncmp(key, row.section, sectionLength) == 0 && key[sectionLength] == '_' && strcmp(key + sectionLength + 1, row.key) == 0) {
-			return &row;
+		const size_t sectionLength = strlen(setting.section);
+		if (strncmp(key, setting.section, sectionLength) == 0 && key[sectionLength] == '_' && strcmp(key + sectionLength + 1, setting.key) == 0) {
+			return &setting;
 		}
 	}
 	return nullptr;
 }
 
+void SettingText(const Setting& setting, char* out, size_t outSize) {
+	if (setting.isBool) {
+		snprintf(out, outSize, "%s", *setting.target != 0 ? "true" : "false");
+	} else {
+		snprintf(out, outSize, "%d", *setting.target);
+	}
+}
+
 bool MenuGet(const char* key, char* out, uint32_t outSize) {
-	const MenuRow* row = MenuFind(key);
-	if (row == nullptr || out == nullptr || outSize == 0) {
+	const Setting* setting = MenuFind(key);
+	if (setting == nullptr || out == nullptr || outSize == 0) {
 		return false;
 	}
-	if (row->isBool) {
-		snprintf(out, outSize, "%s", *row->target != 0 ? "true" : "false");
-	} else {
-		snprintf(out, outSize, "%d", *row->target);
-	}
+	SettingText(*setting, out, outSize);
 	return true;
 }
 
-// Rewrites one "key = value" line of horror-night.toml (inside its [section]); adds the
-// line, or the section, when an older file does not have it.
-void SaveConfigValue(const char* section, const char* key, const char* value) {
-	static char text[20000];
-	static char result[24000];
-	memset(text, 0, sizeof(text));
-	if (!g_ctx->ReadConfig(text, sizeof(text) - 1)) {
-		return;
-	}
-	const size_t keyLength = strlen(key);
-	size_t       used      = 0;
-	bool         inSection = false;
-	bool         done      = false;
-	bool         seen      = false;
-	const char*  line      = text;
-	auto         append    = [&](const char* data, size_t length) {
-		if (used + length < sizeof(result) - 1) {
+// Writes into result the config text with one "key = value" line of [section] replaced; the
+// line, or the whole section, is added when an older file does not have it. Returns the length.
+size_t RewriteConfig(const char* text, const char* section, const char* key, const char* value, char* result, size_t resultSize) {
+	const size_t keyLength     = strlen(key);
+	const size_t sectionLength = strlen(section);
+	size_t       used          = 0;
+	bool         inSection     = false;
+	bool         done          = false;
+	bool         seen          = false;
+	const char*  line          = text;
+	const auto   append        = [&](const char* data, size_t length) {
+		if (used + length < resultSize - 1) {
 			memcpy(result + used, data, length);
 			used += length;
 		}
 	};
+	// a new line always starts on a line of its own, also after a last line with no line end
+	const auto appendLine = [&](const char* data, size_t length) {
+		if (used > 0 && result[used - 1] != '\n') {
+			append("\r\n", 2);
+		}
+		append(data, length);
+	};
 	while (*line != '\0') {
-		const char* end = strchr(line, '\n');
+		const char*  end    = strchr(line, '\n');
 		const size_t length = end != nullptr ? static_cast<size_t>(end - line) + 1 : strlen(line);
-		const char* c = line;
+		const char*  c      = line;
 		while (*c == ' ' || *c == '\t') {
 			++c;
 		}
 		if (*c == '[') {
 			if (inSection && !done) {
-				char added[160];
+				char      added[160];
 				const int n = snprintf(added, sizeof(added), "%s = %s\r\n", key, value);
-				append(added, static_cast<size_t>(n));
+				appendLine(added, static_cast<size_t>(n));
 				done = true;
 			}
-			const size_t sectionLength = strlen(section);
 			inSection = strncmp(c + 1, section, sectionLength) == 0 && c[1 + sectionLength] == ']';
 			seen      = seen || inSection;
 		} else if (inSection && !done && strncmp(c, key, keyLength) == 0) {
@@ -433,7 +488,7 @@ void SaveConfigValue(const char* section, const char* key, const char* value) {
 				++after;
 			}
 			if (*after == '=') {
-				char replaced[160];
+				char       replaced[160];
 				const bool crlf = length >= 2 && line[length - 2] == '\r';
 				const int  n    = snprintf(replaced, sizeof(replaced), "%s = %s%s", key, value, end != nullptr ? (crlf ? "\r\n" : "\n") : "");
 				append(replaced, static_cast<size_t>(n));
@@ -446,17 +501,28 @@ void SaveConfigValue(const char* section, const char* key, const char* value) {
 		line += length;
 	}
 	if (!done) {
-		char added[200];
+		char      added[200];
 		const int n = seen ? snprintf(added, sizeof(added), "%s = %s\r\n", key, value) : snprintf(added, sizeof(added), "\r\n[%s]\r\n%s = %s\r\n", section, key, value);
-		append(added, static_cast<size_t>(n));
+		appendLine(added, static_cast<size_t>(n));
 	}
 	result[used] = '\0';
+	return used;
+}
+
+void SaveConfigValue(const char* section, const char* key, const char* value) {
+	static char text[32768];
+	static char result[36864];
+	memset(text, 0, sizeof(text));
+	if (!g_ctx->ReadConfig(text, sizeof(text) - 1)) {
+		return;
+	}
+	RewriteConfig(text, section, key, value, result, sizeof(result));
 	static_cast<void>(g_ctx->WriteConfig(result));
 }
 
 bool MenuSet(const char* key, const char* value, char* error, uint32_t errorSize) {
-	const MenuRow* row = MenuFind(key);
-	if (row == nullptr || value == nullptr) {
+	const Setting* setting = MenuFind(key);
+	if (setting == nullptr || value == nullptr) {
 		if (error != nullptr && errorSize > 0) {
 			snprintf(error, errorSize, "unknown setting");
 		}
@@ -465,21 +531,11 @@ bool MenuSet(const char* key, const char* value, char* error, uint32_t errorSize
 	while (*value == ' ' || *value == '"') {
 		++value;
 	}
-	int number = 0;
-	if (row->isBool) {
-		number = (strncmp(value, "true", 4) == 0 || value[0] == '1') ? 1 : 0;
-	} else {
-		number = Clamp(atoi(value), row->min, row->max);
-	}
-	*row->target = number;
+	SetSetting(*setting, setting->isBool ? ((strncmp(value, "true", 4) == 0 || value[0] == '1') ? 1 : 0) : atoi(value));
 	NormalizeConfig();
 	char text[32];
-	if (row->isBool) {
-		snprintf(text, sizeof(text), "%s", *row->target != 0 ? "true" : "false");
-	} else {
-		snprintf(text, sizeof(text), "%d", *row->target);
-	}
-	SaveConfigValue(row->section, row->key, text);
+	SettingText(*setting, text, sizeof(text));
+	SaveConfigValue(setting->section, setting->key, text);
 	return true;
 }
 
@@ -505,23 +561,27 @@ void JoinSettingsMenu() {
 	}
 
 	size_t used = static_cast<size_t>(snprintf(g_menuText, sizeof(g_menuText), "title = \"Horrors in the Night\"\n"));
-	for (const MenuRow& row : kMenu) {
+	for (const Setting& setting : kSettings) {
+		if (setting.label == nullptr) {
+			continue;
+		}
 		if (used > sizeof(g_menuText) - 600) {
+			Log("settings menu: the list of settings is too long for its buffer - the last ones are missing from the menu");
 			break;
 		}
 		used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "[[setting]]\n"));
-		if (row.section == nullptr) {
-			used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "type = \"header\"\nlabel = \"%s\"\n", row.label));
+		if (setting.section == nullptr) {
+			used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "type = \"header\"\nlabel = \"%s\"\n", setting.label));
 			continue;
 		}
-		used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "key = \"%s_%s\"\ntype = \"%s\"\nlabel = \"%s\"\n", row.section, row.key,
-			row.isBool ? "bool" : "int", row.label));
-		if (row.note != nullptr) {
-			used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "note = \"%s\"\n", row.note));
+		used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "key = \"%s_%s\"\ntype = \"%s\"\nlabel = \"%s\"\n", setting.section, setting.key,
+			setting.isBool ? "bool" : "int", setting.label));
+		if (setting.note != nullptr) {
+			used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "note = \"%s\"\n", setting.note));
 		}
-		if (!row.isBool) {
-			used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "min = %d\nmax = %d\nstep = %d\nshift_step = %d\nctrl_step = %d\n", row.min, row.max,
-				row.step, row.step * 5, row.step * 10));
+		if (!setting.isBool) {
+			used += static_cast<size_t>(snprintf(g_menuText + used, sizeof(g_menuText) - used, "min = %d\nmax = %d\nstep = %d\nshift_step = %d\nctrl_step = %d\n", setting.min,
+				setting.max, setting.step, setting.step * 5, setting.step * 10));
 		}
 	}
 
@@ -655,6 +715,63 @@ struct LevelMonsters {
 };
 LevelMonsters     g_levelMonsters[2][kMaxLevels];
 int               g_levelsLoaded = 0;
+
+// What the D2RMM mod says about each level (the extra columns of levels.tsv) and which of its
+// options this install was built with (the "#mod" line). An older mod writes neither: then the
+// vanilla level lists in DefaultLevelInfo apply.
+enum : uint8_t { kFallNone = 0, kFallRain = 1, kFallSnow = 2, kFallSand = 3 };
+struct LevelInfo {
+	uint8_t weather; // what falls in the level itself
+	uint8_t under;   // what falls outside, for a level that is indoors or sheltered
+	uint8_t town;
+};
+LevelInfo        g_levelInfo[kMaxLevels];
+bool             g_levelTableFromMod = false;
+std::atomic<int> g_modKnown { 0 };     // levels.tsv carried the "#mod" line
+std::atomic<int> g_modSkyFlash { 0 };  // the "day" lighting of stormy areas is the lit-by-lightning look
+std::atomic<int> g_modSandstorm { 0 }; // the "day" lighting of the Act 2 desert is the sandstorm look
+
+void DefaultLevelInfo() {
+	memset(g_levelInfo, 0, sizeof(g_levelInfo));
+	struct Range {
+		int              first;
+		int              last;
+		uint8_t LevelInfo::* field;
+		uint8_t          value;
+	};
+	const Range ranges[] = {
+		// underground and sheltered: Acts 1 and 3 under the rain, Act 5 under the snow
+		{ 8, 37, &LevelInfo::under, kFallRain }, { 84, 102, &LevelInfo::under, kFallRain }, { 133, 133, &LevelInfo::under, kFallRain },
+		{ 113, 132, &LevelInfo::under, kFallSnow }, { 135, 135, &LevelInfo::under, kFallSnow },
+		// outdoors (levels.txt Rain = 1)
+		{ 1, 7, &LevelInfo::weather, kFallRain }, { 17, 17, &LevelInfo::weather, kFallRain }, { 38, 39, &LevelInfo::weather, kFallRain },
+		{ 75, 83, &LevelInfo::weather, kFallRain }, { 136, 136, &LevelInfo::weather, kFallRain },
+		{ 109, 112, &LevelInfo::weather, kFallSnow }, { 117, 117, &LevelInfo::weather, kFallSnow }, { 120, 121, &LevelInfo::weather, kFallSnow },
+		{ 137, 137, &LevelInfo::weather, kFallSnow },
+		// the desert
+		{ 41, 46, &LevelInfo::weather, kFallSand }, { 134, 134, &LevelInfo::weather, kFallSand },
+		{ 1, 1, &LevelInfo::town, 1 }, { 40, 40, &LevelInfo::town, 1 }, { 75, 75, &LevelInfo::town, 1 }, { 103, 103, &LevelInfo::town, 1 }, { 109, 109, &LevelInfo::town, 1 },
+	};
+	for (const Range& range : ranges) {
+		for (int level = range.first; level <= range.last && level < kMaxLevels; ++level) {
+			g_levelInfo[level].*range.field = range.value;
+		}
+	}
+	for (LevelInfo& info : g_levelInfo) {
+		if (info.weather != kFallNone) {
+			info.under = kFallNone;
+		}
+	}
+	g_levelTableFromMod = false;
+}
+
+int LevelFall(int level) {
+	return level > 0 && level < kMaxLevels ? g_levelInfo[level].weather : 0;
+}
+
+int LevelUnder(int level) {
+	return level > 0 && level < kMaxLevels ? g_levelInfo[level].under : 0;
+}
 std::atomic<bool> g_diabloDead { false }; // Diablo died in this game: no more phantoms
 
 ClassList         g_classes[4]; // by data bank 1..3
@@ -681,6 +798,9 @@ FrameFn  g_originalFrame = nullptr;
 std::atomic<uint32_t> g_flashRequests { 0 };
 uint32_t              g_flashSeen    = 0;
 int                   g_flashHitsLeft = 0; // flickers still to come in the current strike
+uint32_t              g_flashNextHit = 0;  // frame of the next flicker
+bool                  g_flashDirect  = false; // this strike lands on the players
+bool                  g_flashFirst   = false; // its first flicker is still to come
 int                   g_flashLogs    = 0;
 int                   g_lightningRow[4] = { -1, -1, -1, -1 }; // missiles row by data bank
 int                   g_lightningSkill[4] = { 57, 57, 57, 57 }; // the row's Skill (Thunder Storm)
@@ -704,7 +824,7 @@ void CollectPlayer(Game*, Unit* unit, void* user) {
 }
 
 bool IsTown(int level) {
-	return level == 1 || level == 40 || level == 75 || level == 103 || level == 109;
+	return level > 0 && level < kMaxLevels && g_levelInfo[level].town != 0;
 }
 
 const ClassList* ClassesFor(Game* game) {
@@ -771,7 +891,6 @@ int TwinOf(const ClassList* classes, uint32_t monsterClass) {
 // ---- what the client half needs to know (single player: same process) ----
 std::atomic<uint32_t> g_localPlayerId { 0 };
 std::atomic<int32_t>  g_realLife { 0 };       // 1/256 units
-std::atomic<int>      g_lifePercent { 100 };
 std::atomic<bool>     g_haunting { false };   // a townsfolk haunting is running
 std::atomic<uint32_t> g_hauntCount { 0 };     // bumped when one starts (the client plays a sting)
 std::atomic<bool>     g_forceHaunt { false };
@@ -964,6 +1083,10 @@ void ServerTick(Game* game) {
 		g_haunting     = false;
 		memset(g_deaths, 0, sizeof(g_deaths));
 		g_nextSpawn    = frame + static_cast<uint32_t>(RandRange(20, 60)) * 25;
+		// a strike cut short by leaving the old game does not carry on in this one
+		g_flashHitsLeft = 0;
+		g_flashNextHit  = 0;
+		g_flashSeen     = g_flashRequests.load(std::memory_order_relaxed);
 	}
 	g_lastFrame = frame;
 
@@ -1186,11 +1309,11 @@ void WorldFlash(Game* game, const PlayerList& players) {
 	}
 	// A strike is several hits a few frames apart; each hit is a cluster of bolts:
 	// one close to the player and the rest spread out, so the whole view lights up.
-	int&            hitsLeft = g_flashHitsLeft;
-	static uint32_t nextHit  = 0;
-	static bool     directHit = false; // this strike lands on the players
-	static bool     firstFlicker = false;
-	static int32_t  spots[kMaxPlayers][8][2]; // where this strike's bolts land: only the first flicker is random
+	int&            hitsLeft     = g_flashHitsLeft;
+	uint32_t&       nextHit      = g_flashNextHit;
+	bool&           directHit    = g_flashDirect;
+	bool&           firstFlicker = g_flashFirst;
+	static int32_t  spots[kMaxPlayers][8][2]; // where this strike's bolts land: only the first flicker is random (cleared when a strike starts)
 	const uint32_t  frame    = GameFrame(game);
 	const uint32_t  requests = g_flashRequests.load();
 	if (requests != g_flashSeen) {
@@ -1342,8 +1465,86 @@ void FindLightningRow(const D2RL::PluginContext* context, uint32_t bank) {
 	Log("storm: missiles bank %u has %u rows of 0x%x bytes, lightning row %d, skill %d", bank, view.rowCount, view.rowSize, g_lightningRow[bank], g_lightningSkill[bank]);
 }
 
-// Reads <mod>\<mod>.mpq\data\global\excel\d2rloader\horror-night\levels.tsv, written by the D2RMM mod:
-// level id, monsters on Normal, monsters on Nightmare/Hell (monstats row numbers).
+// Reads the text of levels.tsv, written by the D2RMM mod. The text is cut up while it is read.
+//   #mod <tab> alwaysNight=1 <tab> skyFlash=1 <tab> sandstorm=1      (the mod's own options)
+//   level <tab> monsters on Normal <tab> monsters on Nightmare/Hell  (monstats row numbers)
+//         [<tab> weather <tab> town <tab> under]                     (see LevelInfo; newer mods only)
+// Returns the number of level lines.
+int ParseLevels(char* text) {
+	memset(g_levelMonsters, 0, sizeof(g_levelMonsters));
+	DefaultLevelInfo();
+	g_modKnown     = 0;
+	g_modSkyFlash  = 0;
+	g_modSandstorm = 0;
+	int   loaded   = 0;
+	bool  overflow = false;
+	char* line     = text;
+	while (*line != '\0') {
+		char* end = line;
+		while (*end != '\0' && *end != '\n') {
+			++end;
+		}
+		const bool last = *end == '\0';
+		*end            = '\0';
+		if (end > line && end[-1] == '\r') {
+			end[-1] = '\0';
+		}
+		if (line[0] == '#' && line[1] == 'm' && line[2] == 'o' && line[3] == 'd') {
+			g_modKnown     = 1;
+			g_modSkyFlash  = strstr(line, "skyFlash=1") != nullptr ? 1 : 0;
+			g_modSandstorm = strstr(line, "sandstorm=1") != nullptr ? 1 : 0;
+		} else if (*line >= '0' && *line <= '9') {
+			char* fields[6] = { line };
+			int   count     = 1;
+			for (char* c = line; *c != '\0' && count < 6; ++c) {
+				if (*c == '\t') {
+					*c              = '\0';
+					fields[count++] = c + 1;
+				}
+			}
+			const int level = atoi(fields[0]);
+			if (level > 0 && level < kMaxLevels) {
+				for (int column = 0; column < 2 && column + 1 < count; ++column) {
+					LevelMonsters& monsters = g_levelMonsters[column][level];
+					for (const char* c = fields[column + 1]; *c != '\0';) {
+						if (*c >= '0' && *c <= '9') {
+							if (monsters.count < kMaxPerLevel) {
+								monsters.bases[monsters.count++] = static_cast<int16_t>(atoi(c));
+							} else {
+								overflow = true;
+							}
+							while (*c >= '0' && *c <= '9') {
+								++c;
+							}
+						} else {
+							++c;
+						}
+					}
+				}
+				if (count >= 6) {
+					if (!g_levelTableFromMod) {
+						memset(g_levelInfo, 0, sizeof(g_levelInfo)); // the mod's table replaces the vanilla lists
+						g_levelTableFromMod = true;
+					}
+					g_levelInfo[level].weather = static_cast<uint8_t>(Clamp(atoi(fields[3]), 0, 3));
+					g_levelInfo[level].town    = atoi(fields[4]) != 0 ? 1 : 0;
+					g_levelInfo[level].under   = static_cast<uint8_t>(Clamp(atoi(fields[5]), 0, 3));
+				}
+			}
+			++loaded;
+		}
+		if (last) {
+			break;
+		}
+		line = end + 1;
+	}
+	if (overflow) {
+		Log("phantoms: a level lists more than %d monsters - the rest are left out", kMaxPerLevel);
+	}
+	return loaded;
+}
+
+// Reads <mod>\<mod>.mpq\data\global\excel\d2rloader\horror-night\levels.tsv.
 void LoadLevelMonsters() {
 	wchar_t path[1024] = {};
 	const DWORD length = GetModuleFileNameW(g_module, path, 700);
@@ -1367,7 +1568,7 @@ void LoadLevelMonsters() {
 
 	HANDLE handle = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
 	if (handle == INVALID_HANDLE_VALUE) {
-		Log("phantoms: could not open %ls (run Install in D2RMM with the Horrors in the Night mod's phantoms on)", file);
+		Log("levels: could not open %ls (run Install in D2RMM with the Horrors in the Night mod on)", file);
 		return;
 	}
 	static char text[262144];
@@ -1377,51 +1578,15 @@ void LoadLevelMonsters() {
 	if (!ok) {
 		return;
 	}
+	if (read == sizeof(text) - 1) {
+		Log("levels: levels.tsv is larger than %u bytes - the end of it is not read", static_cast<unsigned>(sizeof(text) - 1));
+	}
 	text[read] = '\0';
 
-	memset(g_levelMonsters, 0, sizeof(g_levelMonsters));
-	g_levelsLoaded = 0;
-	char* line = text;
-	while (*line != '\0') {
-		char* end = line;
-		while (*end != '\0' && *end != '\n') {
-			++end;
-		}
-		const bool last = *end == '\0';
-		*end            = '\0';
-		if (*line >= '0' && *line <= '9') {
-			const int level = atoi(line);
-			char*     field = line;
-			for (int column = 0; column < 2; ++column) {
-				field = strchr(field, '\t');
-				if (field == nullptr) {
-					break;
-				}
-				++field;
-				if (level <= 0 || level >= kMaxLevels) {
-					continue;
-				}
-				LevelMonsters& monsters = g_levelMonsters[column][level];
-				const char*    c        = field;
-				while (*c != '\0' && *c != '\t' && *c != '\r' && monsters.count < kMaxPerLevel) {
-					if (*c >= '0' && *c <= '9') {
-						monsters.bases[monsters.count++] = static_cast<int16_t>(atoi(c));
-						while (*c >= '0' && *c <= '9') {
-							++c;
-						}
-					} else {
-						++c;
-					}
-				}
-			}
-			++g_levelsLoaded;
-		}
-		if (last) {
-			break;
-		}
-		line = end + 1;
-	}
-	Log("phantoms: %d levels with their monsters loaded (level 2 on Normal: %d monsters)", g_levelsLoaded, g_levelMonsters[0][2].count);
+	g_levelsLoaded = ParseLevels(text);
+	Log("levels: %d read (level 2 on Normal: %d monsters); weather and towns from %s; mod options %s%s%s", g_levelsLoaded, g_levelMonsters[0][2].count,
+		g_levelTableFromMod ? "the mod's table" : "the built-in vanilla lists (older mod)",
+		g_modKnown.load() != 0 ? "known" : "not given (older mod)", g_modSkyFlash.load() != 0 ? ", lightning sky" : "", g_modSandstorm.load() != 0 ? ", sandstorm" : "");
 }
 
 void __cdecl OnMonsterDeath(const D2RL::PluginContext*, const D2RL::Lifecycle::MonsterDeathEvent* event, void*) noexcept {
@@ -1475,11 +1640,14 @@ void __cdecl OnTablesLoaded(const D2RL::PluginContext* context, const D2RL::Life
 			Log("phantoms: monstats bank %u row size is 0x%x, expected 0x%x - phantoms off for this bank", bank, view.rowSize, kMonstatsSize);
 			continue;
 		}
-		const auto* rows = static_cast<const uint8_t*>(view.rows);
+		const auto* rows    = static_cast<const uint8_t*>(view.rows);
+		int         skipped = 0;
 		for (uint32_t row = 0; row < view.rowCount; ++row) {
 			int16_t aip8[3];
 			memcpy(aip8, rows + static_cast<size_t>(row) * kMonstatsSize + kAip8Offset, sizeof(aip8));
-			if (aip8[0] == kPhantomMark && aip8[2] >= kPhantomMark && aip8[2] <= kPhantomMark + 5 && aip8[1] >= 0 && g_classes[bank].count < kMaxClasses) {
+			if (aip8[0] == kPhantomMark && aip8[2] >= kPhantomMark && aip8[2] <= kPhantomMark + 5 && aip8[1] >= 0 && g_classes[bank].count >= kMaxClasses) {
+				++skipped;
+			} else if (aip8[0] == kPhantomMark && aip8[2] >= kPhantomMark && aip8[2] <= kPhantomMark + 5 && aip8[1] >= 0) {
 				g_classes[bank].acts[g_classes[bank].count]  = static_cast<int8_t>(aip8[2] - kPhantomMark - 1);
 				if (row < kMaxRows) {
 					g_classes[bank].isPhantom[row] = 1;
@@ -1495,6 +1663,9 @@ void __cdecl OnTablesLoaded(const D2RL::PluginContext* context, const D2RL::Life
 		if (view.rowCount > 5) {
 			memcpy(&zombieAip[0], rows + 5 * kMonstatsSize + 0x90, 2);
 			memcpy(&zombieAip[1], rows + 5 * kMonstatsSize + 0x96, 2);
+		}
+		if (skipped > 0) {
+			Log("phantoms: monstats bank %u has more than %d phantom rows - %d are not used", bank, kMaxClasses, skipped);
 		}
 		FindLightningRow(context, bank);
 		Log("phantoms: monstats bank %u has %u rows, %d phantom rows (first %d); layout check zombie aip1=%d aip2=%d", bank, view.rowCount, g_classes[bank].count,
@@ -1588,6 +1759,7 @@ int               g_levelLogs = 0;
 // PlayClip only queues a request.
 constexpr int kThunderCount = 4;
 constexpr int kAmbientCount = 19; // 0-3 breath, 4-11 moan, 12-15 scream, 16-17 raven, 18 laugh
+constexpr int kWindCount    = 9;  // gusts of a few seconds each, for the sandstorm
 struct Clip {
 	const int16_t* samples = nullptr;
 	uint32_t       count   = 0;
@@ -1595,7 +1767,7 @@ struct Clip {
 };
 Clip              g_thunder[kThunderCount];
 Clip              g_ambient[kAmbientCount];
-Clip              g_heartbeatClip;
+Clip              g_wind[kWindCount];
 std::atomic<bool> g_soundsReady { false }; // set by the loader thread once every clip above is final
 HANDLE            g_soundLoader = nullptr;
 
@@ -1610,45 +1782,17 @@ int      g_strikeCount = 0;
 enum class Area { None, Outdoor, Indoor };
 
 Area StormArea(int level) {
-	const bool rainOutdoor = (level >= 1 && level <= 7) || level == 17 || level == 38 || level == 39 || (level >= 75 && level <= 83);
-	const bool snowOutdoor = (level >= 109 && level <= 112) || level == 117 || level == 120 || level == 121;
-	if (rainOutdoor || (snowOutdoor && g_config.snowAreas != 0)) {
+	const int fall = LevelFall(level);
+	if (fall == kFallRain || (fall == kFallSnow && g_config.snowAreas != 0)) {
 		return Area::Outdoor;
 	}
-	if (g_config.indoorThunder != 0) {
-		const bool rainIndoor = (level >= 8 && level <= 37) || (level >= 84 && level <= 102);
-		const bool snowIndoor = level >= 113 && level <= 135 && !snowOutdoor;
-		if (rainIndoor || (snowIndoor && g_config.snowAreas != 0)) {
+	if (g_config.indoorThunder != 0 && fall == kFallNone) {
+		const int under = LevelUnder(level);
+		if (under == kFallRain || (under == kFallSnow && g_config.snowAreas != 0)) {
 			return Area::Indoor;
 		}
 	}
 	return Area::None;
-}
-
-// lub-dub: two thumps with enough overtone to be heard on small speakers
-void BuildHeartbeat() {
-	constexpr uint32_t kRate  = 22050;
-	constexpr uint32_t kCount = kRate * 55 / 100;
-	static int16_t     buffer[kCount];
-	for (uint32_t i = 0; i < kCount; ++i) {
-		const double t     = static_cast<double>(i) / kRate;
-		double       value = 0.0;
-		for (const double start : { 0.0, 0.24 }) {
-			if (t >= start) {
-				const double local    = t - start;
-				const double strength = start == 0.0 ? 1.0 : 0.8;
-				const double pitch    = start == 0.0 ? 95.0 : 115.0;
-				const double envelope = std::exp(-local * 16.0) * (1.0 - std::exp(-local * 400.0));
-				value += strength * envelope
-					* (std::sin(local * 2.0 * 3.14159265 * pitch) + 0.55 * std::sin(local * 2.0 * 3.14159265 * pitch * 2.0) + 0.25 * std::sin(local * 2.0 * 3.14159265 * pitch * 3.0));
-			}
-		}
-		value     = std::tanh(value * 1.6);
-		buffer[i] = static_cast<int16_t>(value * 30000.0);
-	}
-	g_heartbeatClip.samples = buffer;
-	g_heartbeatClip.count   = kCount;
-	g_heartbeatClip.rate    = kRate;
 }
 
 // The sounds are the game's own (Blizzard's), so the DLL does not carry them: they are read out of
@@ -1715,11 +1859,16 @@ int LoadSounds() {
 			}
 			loaded += LoadGameClip(storage, name, ambient, &g_ambient[i]) ? 1 : 0;
 		}
+		// the gusts are quiet recordings: lifted, and kept whole
+		const SoundProcess wind { 22050, 0.0f, 0.0f, 6.0f, 0.95f, 5.0f, 50.0f, 0.0f };
+		for (int i = 0; i < kWindCount; ++i) {
+			snprintf(name, sizeof(name), "data:data\\global\\sfx\\ambient\\event\\wind%d.flac", i + 1);
+			loaded += LoadGameClip(storage, name, wind, &g_wind[i]) ? 1 : 0;
+		}
 		CloseGameStorage(storage);
-		Log("sounds: %d of %d read from the game data in %llu ms", loaded, kThunderCount + kAmbientCount,
+		Log("sounds: %d of %d read from the game data in %llu ms", loaded, kThunderCount + kAmbientCount + kWindCount,
 			static_cast<unsigned long long>(GetTickCount64() - started));
 	}
-	BuildHeartbeat();
 	return loaded;
 }
 
@@ -1735,35 +1884,136 @@ constexpr uint32_t kMixBlock   = 1024; // 32 ms per buffer
 constexpr int      kMixBuffers = 3;
 constexpr int      kMaxVoices  = 12;
 constexpr uint32_t kIdleBlocks = kMixRate * 10 / kMixBlock; // close the device after 10 s of silence
+constexpr float    kWindStep   = 2.0f * kMixBlock / kMixRate; // most the wind's loudness moves in one buffer
 
 struct PlayRequest {
 	const Clip* clip;
 	float       gain;
 };
-SRWLOCK           g_playLock = SRWLOCK_INIT;
-PlayRequest       g_requests[16];
-int               g_requestCount = 0;
-HANDLE            g_mixEvent     = nullptr; // auto-reset: a request came in, or the device finished a buffer
-HANDLE            g_mixThread    = nullptr;
-std::atomic<bool> g_mixStop { false };
+SRWLOCK            g_playLock = SRWLOCK_INIT;
+PlayRequest        g_requests[16];
+int                g_requestCount = 0;
+HANDLE             g_mixEvent     = nullptr; // auto-reset: a request came in, or the device finished a buffer
+HANDLE             g_mixThread    = nullptr;
+std::atomic<bool>  g_mixStop { false };
+std::atomic<float> g_windGain { 0.0f }; // how loud the storm wants the wind right now; the mixer follows it
 
 struct Voice {
 	const Clip* clip;
 	uint64_t    position; // in clip samples, 32.32 fixed point
 	uint64_t    step;
 	float       gain;
+	bool        wind; // a gust: faded at both ends, and as loud as the wind is at that moment
 };
+
+// Keeps the wind going as overlapping gusts: a new one starts before the last has died away.
+// untilNext counts output samples down to the next gust.
+void WindGusts(Voice* voices, int& voiceCount, bool wanted, bool audible, int32_t& untilNext) {
+	if (!wanted) {
+		untilNext = 0;
+		if (!audible) { // faded right out: gusts still running are dropped
+			for (int v = 0; v < voiceCount;) {
+				if (voices[v].wind) {
+					voices[v] = voices[--voiceCount];
+				} else {
+					++v;
+				}
+			}
+		}
+		return;
+	}
+	untilNext -= static_cast<int32_t>(kMixBlock);
+	if (untilNext > 0 || voiceCount >= kMaxVoices) {
+		return;
+	}
+	const Clip* clip = nullptr;
+	for (int attempt = 0; attempt < kWindCount && clip == nullptr; ++attempt) {
+		const Clip& candidate = g_wind[g_mixRng.Next() % kWindCount];
+		if (candidate.samples != nullptr && candidate.count > 0) {
+			clip = &candidate;
+		}
+	}
+	if (clip == nullptr) {
+		untilNext = static_cast<int32_t>(kMixRate); // no wind sound was read: look again in a second
+		return;
+	}
+	voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, 1.0f, true };
+	const uint64_t length = static_cast<uint64_t>(clip->count) * kMixRate / clip->rate; // in output samples
+	untilNext             = static_cast<int32_t>(length * static_cast<uint64_t>(g_mixRng.Range(55, 80)) / 100);
+}
+
+// One buffer of sound: every voice added up, finished voices dropped. windFrom and windTo are
+// the wind's loudness at the start and at the end of the buffer.
+void MixBlock(Voice* voices, int& voiceCount, float windFrom, float windTo, int16_t* out) {
+	float mix[kMixBlock] = {};
+	for (int v = 0; v < voiceCount;) {
+		Voice&         voice   = voices[v];
+		const int16_t* samples = voice.clip->samples;
+		const uint32_t count   = voice.clip->count;
+		uint32_t       i       = 0;
+		if (voice.wind) {
+			uint32_t fade = voice.clip->rate * 2 / 5; // 0.4 s in and out
+			if (fade > count / 3) {
+				fade = count / 3;
+			}
+			if (fade == 0) {
+				fade = 1;
+			}
+			const bool  soft     = windFrom > 1.0f || windTo > 1.0f;
+			const float windStep = (windTo - windFrom) / static_cast<float>(kMixBlock);
+			const float perFade  = 1.0f / static_cast<float>(fade);
+			for (; i < kMixBlock; ++i) {
+				const uint64_t at = voice.position >> 32;
+				if (at >= count) {
+					break;
+				}
+				const float frac     = static_cast<float>(voice.position & 0xffffffffULL) * (1.0f / 4294967296.0f);
+				const float a        = samples[at];
+				const float next     = at + 1 < count ? samples[at + 1] : a;
+				const float envelope = at < fade ? static_cast<float>(at) * perFade : count - at < fade ? static_cast<float>(count - at) * perFade : 1.0f;
+				const float value = (a + (next - a) * frac) * envelope * (windFrom + windStep * static_cast<float>(i)) * (1.0f / 32768.0f);
+				mix[i] += soft ? std::tanh(value) : value;
+				voice.position += voice.step;
+			}
+		} else {
+			const bool  soft  = voice.gain > 1.0f; // above full strength the peaks are rounded off, not clipped
+			const float scale = voice.gain / 32768.0f;
+			for (; i < kMixBlock; ++i) {
+				const uint64_t at = voice.position >> 32;
+				if (at >= count) {
+					break;
+				}
+				const float frac  = static_cast<float>(voice.position & 0xffffffffULL) * (1.0f / 4294967296.0f);
+				const float a     = samples[at];
+				const float next  = at + 1 < count ? samples[at + 1] : a;
+				const float value = (a + (next - a) * frac) * scale;
+				mix[i] += soft ? std::tanh(value) : value;
+				voice.position += voice.step;
+			}
+		}
+		if (i < kMixBlock) {
+			voices[v] = voices[--voiceCount]; // finished
+		} else {
+			++v;
+		}
+	}
+	for (uint32_t i = 0; i < kMixBlock; ++i) {
+		const float value = mix[i] > 1.0f ? 1.0f : mix[i] < -1.0f ? -1.0f : mix[i];
+		out[i]            = static_cast<int16_t>(value * 32767.0f);
+	}
+}
 
 DWORD WINAPI MixerThread(void*) {
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); // little work, but it must not starve
-	HWAVEOUT     device = nullptr;
-	WAVEHDR      headers[kMixBuffers] {};
+	HWAVEOUT       device = nullptr;
+	WAVEHDR        headers[kMixBuffers] {};
 	static int16_t buffers[kMixBuffers][kMixBlock];
-	float        mix[kMixBlock];
-	Voice        voices[kMaxVoices];
-	int          voiceCount = 0;
-	uint32_t     idle       = 0;
-	bool         failedLogged = false;
+	Voice          voices[kMaxVoices];
+	int            voiceCount   = 0;
+	uint32_t       idle         = 0;
+	bool           failedLogged = false;
+	float          windNow      = 0.0f; // the wind's loudness at the end of the last buffer
+	int32_t        untilGust    = 0;
 
 	while (!g_mixStop.load(std::memory_order_relaxed)) {
 		WaitForSingleObject(g_mixEvent, INFINITE);
@@ -1773,13 +2023,13 @@ DWORD WINAPI MixerThread(void*) {
 		AcquireSRWLockExclusive(&g_playLock);
 		for (int i = 0; i < g_requestCount && voiceCount < kMaxVoices; ++i) {
 			const Clip* clip = g_requests[i].clip;
-			voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, g_requests[i].gain };
+			voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, g_requests[i].gain, false };
 		}
 		g_requestCount = 0;
 		ReleaseSRWLockExclusive(&g_playLock);
 
 		if (device == nullptr) {
-			if (voiceCount == 0) {
+			if (voiceCount == 0 && g_windGain.load(std::memory_order_relaxed) <= 0.001f) {
 				continue;
 			}
 			WAVEFORMATEX format {};
@@ -1805,7 +2055,9 @@ DWORD WINAPI MixerThread(void*) {
 				waveOutPrepareHeader(device, &headers[b], sizeof(WAVEHDR));
 				headers[b].dwFlags |= WHDR_DONE; // free to fill
 			}
-			idle = 0;
+			idle      = 0;
+			windNow   = 0.0f;
+			untilGust = 0;
 		}
 
 		// refill every buffer the device has finished with
@@ -1813,37 +2065,13 @@ DWORD WINAPI MixerThread(void*) {
 			if ((headers[b].dwFlags & WHDR_DONE) == 0) {
 				continue;
 			}
-			memset(mix, 0, sizeof(mix));
-			for (int v = 0; v < voiceCount;) {
-				Voice&         voice   = voices[v];
-				const int16_t* samples = voice.clip->samples;
-				const uint32_t count   = voice.clip->count;
-				const bool     soft    = voice.gain > 1.0f; // above full strength the peaks are rounded off, not clipped
-				const float    scale   = voice.gain / 32768.0f;
-				uint32_t       i       = 0;
-				for (; i < kMixBlock; ++i) {
-					const uint64_t at = voice.position >> 32;
-					if (at >= count) {
-						break;
-					}
-					const float frac  = static_cast<float>(voice.position & 0xffffffffULL) * (1.0f / 4294967296.0f);
-					const float a     = samples[at];
-					const float next  = at + 1 < count ? samples[at + 1] : a;
-					const float value = (a + (next - a) * frac) * scale;
-					mix[i] += soft ? std::tanh(value) : value;
-					voice.position += voice.step;
-				}
-				if (i < kMixBlock) {
-					voices[v] = voices[--voiceCount]; // finished
-				} else {
-					++v;
-				}
-			}
-			for (uint32_t i = 0; i < kMixBlock; ++i) {
-				const float value = mix[i] > 1.0f ? 1.0f : mix[i] < -1.0f ? -1.0f : mix[i];
-				buffers[b][i]     = static_cast<int16_t>(value * 32767.0f);
-			}
-			idle = voiceCount > 0 ? 0 : idle + 1;
+			const float windTarget = g_windGain.load(std::memory_order_relaxed);
+			const float windMove   = windTarget - windNow;
+			const float windTo     = windNow + (windMove > kWindStep ? kWindStep : windMove < -kWindStep ? -kWindStep : windMove);
+			WindGusts(voices, voiceCount, windTarget > 0.001f, windTo > 0.001f, untilGust);
+			MixBlock(voices, voiceCount, windNow, windTo, buffers[b]);
+			windNow = windTo;
+			idle    = voiceCount > 0 ? 0 : idle + 1;
 			headers[b].dwFlags &= ~static_cast<DWORD>(WHDR_DONE);
 			waveOutWrite(device, &headers[b], sizeof(WAVEHDR));
 		}
@@ -1876,6 +2104,7 @@ void StartMixer() {
 }
 
 void StopMixer() {
+	g_windGain = 0.0f;
 	if (g_mixThread != nullptr) {
 		g_mixStop = true;
 		SetEvent(g_mixEvent);
@@ -1899,7 +2128,25 @@ void PlayClip(const Clip& clip, float gain) {
 }
 
 void PlayThunder(float gain) {
-	PlayClip(g_thunder[Rand() % kThunderCount], gain * static_cast<float>(g_config.volume) / 100.0f);
+	PlayClip(g_thunder[ClientRand() % kThunderCount], gain * static_cast<float>(g_config.volume) / 100.0f);
+}
+
+// Called from the game's threads: how loud the wind should be from now on (0 = none). The
+// mixer is only woken when the wind starts; after that the audio device keeps it running.
+void SetWind(float gain) {
+	if (g_mixThread == nullptr || !g_soundsReady.load(std::memory_order_acquire) || gain < 0.001f) {
+		gain = 0.0f;
+	}
+	static float sent = 0.0f; // this runs every frame, and most frames the wind has not changed
+	if (gain == sent) {
+		return;
+	}
+	const bool start = gain > 0.0f && sent <= 0.0f;
+	sent             = gain;
+	g_windGain.store(gain, std::memory_order_relaxed);
+	if (start) {
+		SetEvent(g_mixEvent);
+	}
 }
 
 float FlashAlpha(uint64_t elapsed) {
@@ -1982,12 +2229,12 @@ void SkyWrite(int32_t stage, float blend, uint8_t overrideOn) {
 
 void StartSkyFlash(uint64_t now) {
 	g_skyStart  = now;
-	g_peakCount = RandRange(g_config.hitsMin, g_config.hitsMax);
+	g_peakCount = ClientRange(g_config.hitsMin, g_config.hitsMax);
 	uint32_t at = 0;
 	for (int i = 0; i < g_peakCount; ++i) {
 		g_peaks[i].startMs  = at;
-		g_peaks[i].strength = i == 0 ? 1.0f : static_cast<float>(RandRange(55, 100)) / 100.0f;
-		at += static_cast<uint32_t>(RandRange(90, 300));
+		g_peaks[i].strength = i == 0 ? 1.0f : static_cast<float>(ClientRange(55, 100)) / 100.0f;
+		at += static_cast<uint32_t>(ClientRange(90, 300));
 	}
 }
 
@@ -2021,11 +2268,20 @@ float SkyIntensity(uint64_t now) {
 	return best;
 }
 
-void UpdateSky(uint64_t now, bool inGame) {
-	if (!g_skyReady || g_config.skyFlash == 0) {
+// sand: 0-1, how much of the sandstorm look to show (the same blend the lightning uses).
+void UpdateSky(uint64_t now, bool inGame, float sand) {
+	if (!g_skyReady) {
 		return;
 	}
-	if (!inGame) {
+	// The game is held on night exactly when the mod turned some area's "day" lighting into
+	// something else (the lightning look, the sandstorm look): the game's own clock would show
+	// that as daytime. An older mod does not say what it installed; then the hold follows the
+	// plugin's own sky flash setting, as it always did.
+	const bool known   = g_modKnown.load(std::memory_order_relaxed) != 0;
+	const bool flashOn = g_config.skyFlash != 0 && (!known || g_modSkyFlash.load(std::memory_order_relaxed) != 0);
+	const bool hold    = inGame
+		&& (known ? g_modSkyFlash.load(std::memory_order_relaxed) != 0 || g_modSandstorm.load(std::memory_order_relaxed) != 0 : g_config.skyFlash != 0);
+	if (!hold) {
 		if (g_skyHolding) {
 			SkyWrite(5, 0.0f, 0); // give the clock back to the game
 			g_skyHolding = false;
@@ -2034,7 +2290,15 @@ void UpdateSky(uint64_t now, bool inGame) {
 		return;
 	}
 	g_skyHolding = true;
-	const float intensity = SkyIntensity(now) * static_cast<float>(g_config.skyStrength) / 100.0f;
+	float intensity = 0.0f;
+	if (flashOn) {
+		intensity = SkyIntensity(now) * static_cast<float>(g_config.skyStrength) / 100.0f;
+	} else {
+		g_peakCount = 0;
+	}
+	if (sand > intensity) {
+		intensity = sand;
+	}
 	if (intensity > 0.001f) {
 		SkyWrite(1, intensity > 1.0f ? 1.0f : intensity, 1);
 	} else {
@@ -2054,21 +2318,159 @@ bool SafeRead(uintptr_t address, T* out) {
 	return SafeReadBytes(address, out, sizeof(T));
 }
 
+// ---- sandstorm --------------------------------------------------------------------
+// The mod turns the unused "day" lighting of the Act 2 desert into the storm look (dense sand-
+// coloured fog, hard wind). A storm is that look faded in and out through the time-of-day blend
+// the lightning uses, with the game's snow effect as blowing dust and gusts of wind on top.
+// Storms come and go on their own clock, whether or not the player is out in one.
+bool              g_sandActive = false; // a storm is blowing
+uint64_t          g_sandChange = 0;     // tick count of the next start or end, 0 = not scheduled
+uint64_t          g_sandLast   = 0;     // tick count of the previous update
+float             g_sandLevel  = 0.0f;  // 0-1: how much of the storm the scene shows now
+float             g_windLevel  = 0.0f;  // 0-1: how much of the wind is heard now
+int               g_sandLogs   = 0;
+std::atomic<bool> g_forceSand { false };
+std::atomic<int>  g_sandShown { 0 }; // percent, for "horror status"
+
+bool SandAllowed() {
+	return g_skyReady && g_config.sandEnabled != 0 && g_modSandstorm.load(std::memory_order_relaxed) != 0;
+}
+
+void Approach(float& value, float target, float step) {
+	if (value < target) {
+		value = value + step < target ? value + step : target;
+	} else {
+		value = value - step > target ? value - step : target;
+	}
+}
+
+void UpdateSandstorm(uint64_t now, int level) {
+	const bool allowed = level > 0 && SandAllowed();
+	const bool toggle  = g_forceSand.load(std::memory_order_relaxed) && g_forceSand.exchange(false);
+	float      seconds = g_sandLast != 0 && now > g_sandLast ? static_cast<float>(now - g_sandLast) / 1000.0f : 0.0f;
+	if (seconds > 0.25f) {
+		seconds = 0.25f; // a long hitch does not jump the fade
+	}
+	g_sandLast = now;
+
+	if (!allowed) {
+		g_sandActive = false;
+		g_sandChange = 0;
+		g_sandLevel  = 0.0f;
+		g_windLevel  = 0.0f;
+		g_sandShown  = 0;
+		SetWind(0.0f);
+		return;
+	}
+
+	const auto calm   = [] { return static_cast<uint64_t>(ClientRange(g_config.sandCalmMin, g_config.sandCalmMax)) * 1000; };
+	const auto length = [] { return static_cast<uint64_t>(ClientRange(g_config.sandLengthMin, g_config.sandLengthMax)) * 1000; };
+	if (toggle) {
+		g_sandActive = !g_sandActive;
+		g_sandChange = now + (g_sandActive ? length() : calm());
+		Log("sandstorm: %s from the console (level %d)", g_sandActive ? "started" : "stopped", level);
+	} else if (g_config.sandAlways != 0) {
+		g_sandActive = true;
+		g_sandChange = 0;
+	} else if (g_sandChange == 0) {
+		g_sandActive = false;
+		g_sandChange = now + calm();
+	} else if (now >= g_sandChange) {
+		g_sandActive = !g_sandActive;
+		g_sandChange = now + (g_sandActive ? length() : calm());
+		if (++g_sandLogs <= 6) {
+			Log("sandstorm: %s (level %d), next change in %llu s", g_sandActive ? "rolling in" : "dying down", level,
+				static_cast<unsigned long long>((g_sandChange - now) / 1000));
+		}
+	}
+
+	const bool  inSand    = LevelFall(level) == kFallSand;
+	const bool  sheltered = !inSand && LevelUnder(level) == kFallSand;
+	const float step      = seconds / static_cast<float>(g_config.sandFade);
+	if (inSand) {
+		Approach(g_sandLevel, g_sandActive ? 1.0f : 0.0f, step);
+	} else if (sheltered && IsTown(level)) {
+		Approach(g_sandLevel, 0.0f, step); // Lut Gholein has the desert's lighting: the storm thins out, it is not cut off
+	} else {
+		g_sandLevel = 0.0f; // any other area's "day" lighting is not a storm
+	}
+	const float wind = !g_sandActive ? 0.0f : inSand ? 1.0f : sheltered && g_config.sandIndoorWind != 0 ? 0.3f : 0.0f;
+	Approach(g_windLevel, wind, step);
+	SetWind(g_windLevel * static_cast<float>(g_config.sandWindVolume) / 100.0f);
+	g_sandShown = static_cast<int>(g_sandLevel * 100.0f + 0.5f);
+}
+
+// How much of the storm look the scene shows, 0-1.
+float SandBlend() {
+	return g_sandLevel * static_cast<float>(g_config.sandStrength) / 100.0f;
+}
+
+// The blowing sand for the weather driver: how many of the configured effects should be up
+// right now. -1 = this is not a place for them (or they are switched off). They come in one
+// after another as the storm builds and go the same way: the first early, the last near its height.
+int SandLayers(int level) {
+	if (level <= 0 || !SandAllowed() || g_config.sandDust <= 0 || LevelFall(level) != kFallSand) {
+		return -1;
+	}
+	int configured = 0;
+	for (const int effect : { g_config.sandLayer1, g_config.sandLayer2, g_config.sandLayer3 }) {
+		configured += effect > 0 && effect < kSandEffectCount ? 1 : 0;
+	}
+	if (configured == 0) {
+		return -1;
+	}
+	int up = 0;
+	for (int i = 0; i < configured; ++i) {
+		const float threshold = 0.1f + (configured > 1 ? 0.6f * static_cast<float>(i) / static_cast<float>(configured - 1) : 0.0f);
+		up += g_sandLevel >= threshold ? 1 : 0;
+	}
+	return up;
+}
+
 // ---- real weather ----------------------------------------------------------------
 // The HD weather object (WeatherTranslation) listens to the old 2D game's rain events.
 // It is found through its "start precipitation" handler in the event hub (static object
 // at 0x2a9aef0, handler list at +0x388, 0x30-byte entries {vtable, function, flag,
 // object}). Its debug switch at +0x7a1 makes it ignore the 2D
 // game, and update(object, {type, intensity}, debug = 1) starts or adjusts the effect.
+// The game only knows two kinds, rain (0) and snow (1). Each plays the particle file named by
+// one of ten strings the object reads from weather_effects.json: {char* text, length, capacity}
+// every 0xb8 bytes from +0x70 (rain, snow, four splashes, four bubbles). Starting a kind sets
+// the "starting" byte at +0x60 and queues a job that creates the effect from that string and
+// stores its entity handle at +0x64 (0xfffff = none); stop destroys the entity whose handle is
+// at +0x64. The game keeps that entity on the player.
 using WeatherFn = void (*)(void* self, void* params, uint8_t fromDebug);
 constexpr uint32_t kWeatherHub    = 0x2a9aef0;
 constexpr uint32_t kWeatherStart  = 0x7cb830;
 constexpr uint32_t kWeatherUpdate = 0x7cb6b0;
 constexpr uint32_t kWeatherStop   = 0x7cba70;
+constexpr uint32_t kSnowString    = 0x70 + 0xb8;
+constexpr uint32_t kNoHandle      = 0xfffff;
+
+// The renderer's entity world (static object; its +0x68 points at the registry):
+//   registry +0x00  component stores, 0x28 bytes each, the store pointer at +0x20
+//            +0x30  begin / +0x38 end of the entity handle table (u32 each)
+//   a store  +0x08  begin / +0x10 end of its pages: page[(handle >> 8) & 0xfff][handle & 0xff] = index
+//            +0x38  its components
+// Transform components (store number at kTransformType, 0xd0 bytes) hold three 4x4 matrices;
+// the translation of the world one is at +0x70.
+constexpr uint32_t kEntityWorld   = 0x2677170;
+constexpr uint32_t kTransformType = 0x2a978dc;
+// spawn(renderer, path, matrix, parent entity, name, once) -> entity handle: a particle effect
+// at a place in the world. The game uses it for rain splashes. once = 0 keeps it until stopped.
+// queue(entity world, entity, job, 1): runs a job where the game itself creates entities.
+// A job is {vtable {destroy, invoke, clone}, 0x38 bytes of its own, "in use" byte at +0x40}.
+using SpawnEffectFn   = uint32_t (*)(void* renderer, const char* path, const float* matrix, uint32_t parent, const char* name, uint8_t once);
+using QueueJobFn      = void (*)(void* world, uint32_t entity, void* job, uint32_t flag);
+using RendererFn      = void* (*)();
+constexpr uint32_t kSpawnEffect = 0xe37040;
+constexpr uint32_t kQueueJob    = 0x912ae0;
+constexpr uint32_t kRenderer    = 0xe21140;
 
 bool      g_weatherReady = false;
+bool      g_fieldReady   = false; // the entity world code looks as expected too: sand can be laid out
 bool      g_weatherHeld  = false; // we switched the override on
-bool      g_weatherOn    = false; // we started precipitation
+bool      g_weatherOn    = false; // we started rain or snow (the game's own handle)
 uint64_t  g_weatherNext  = 0;
 int       g_weatherLogs  = 0;
 
@@ -2096,44 +2498,505 @@ uintptr_t FindWeather() {
 	return 0;
 }
 
-// 0 rain, 1 snow, -1 nothing falls here
-int WeatherFor(int level) {
-	if ((level >= 1 && level <= 7) || level == 17 || level == 38 || level == 39 || (level >= 75 && level <= 83)) {
-		return 0;
-	}
-	if ((level >= 109 && level <= 112) || level == 117 || level == 120 || level == 121) {
-		return 1;
-	}
-	return -1;
-}
-
 uintptr_t g_weatherObject    = 0;  // found once, then only checked
+int       g_weatherKind      = -1; // what is playing: 0 rain, 1 snow, 100 + sand effect for a storm's marker
 int       g_weatherSetType   = -2; // what the last update call asked for...
 int       g_weatherSetLevel  = -2; // ...in which level...
 int       g_weatherSetAmount = -1; // ...at which intensity
 uint64_t  g_weatherReassert  = 0;
 
-// Once a second at most, and normally one memory check: the weather object is remembered, and
-// the game's update is only called when the wanted weather changes (and every 10 s, in case
-// the game stopped it on its own).
-void UpdateWeather(uint64_t now, int level) {
+template <typename T>
+T& WeatherField(uint32_t offset) {
+	return *reinterpret_cast<T*>(g_weatherObject + offset);
+}
+
+// Reads from the game's memory go through a system call that fails instead of crashing (the
+// game changes these structures on its own threads), so they are counted: what a pass needs of
+// the entity world is read once and kept.
+struct WorldView {
+	uintptr_t stores     = 0; // component stores
+	uintptr_t tableBegin = 0; // entity handle table
+	uintptr_t tableEnd   = 0;
+	bool      valid      = false;
+};
+
+WorldView ReadWorld() {
+	WorldView view;
+	uintptr_t registry   = 0;
+	uintptr_t head[8]    = {}; // +0x00 stores, +0x30 / +0x38 handle table
+	if (SafeRead(g_base + kEntityWorld + 0x68, &registry) && registry != 0 && SafeRead(registry, &head) && head[0] != 0 && head[6] != 0 && head[7] > head[6]) {
+		view.stores     = head[0];
+		view.tableBegin = head[6];
+		view.tableEnd   = head[7];
+		view.valid      = true;
+	}
+	return view;
+}
+
+// The check the game itself makes before it uses an entity handle.
+bool HandleAlive(const WorldView& world, uint32_t handle) {
+	uint32_t       entry = 0;
+	const uint64_t index = handle & 0xfffff;
+	return world.valid && handle != kNoHandle && index < (world.tableEnd - world.tableBegin) / 4 && SafeRead(world.tableBegin + index * 4, &entry) && entry == handle;
+}
+
+bool HandleAlive(uint32_t handle) {
+	return HandleAlive(ReadWorld(), handle);
+}
+
+// The whole handle table in one read, for checking many handles: a copy as of now.
+constexpr size_t kTableCopy = 65536;
+uint32_t         g_tableCopy[kTableCopy];
+size_t           g_tableCopied = 0;
+
+bool CopyHandleTable(const WorldView& world) {
+	g_tableCopied = 0;
+	if (!world.valid) {
+		return false;
+	}
+	const size_t count = (world.tableEnd - world.tableBegin) / 4;
+	if (count == 0 || count > kTableCopy || !SafeReadBytes(world.tableBegin, g_tableCopy, count * 4)) {
+		return false;
+	}
+	g_tableCopied = count;
+	return true;
+}
+
+bool AliveInCopy(uint32_t handle) {
+	const size_t index = handle & 0xfffff;
+	return handle != kNoHandle && index < g_tableCopied && g_tableCopy[index] == handle;
+}
+
+// Where an entity is in the renderer's world (x, height, z; two units to a sub-tile).
+bool EntityPosition(const WorldView& world, uint32_t handle, float* position) {
+	static uint32_t type = ~0u; // the store number of transform components never changes once the game has set it
+	if (type == ~0u) {
+		uint32_t read = 0;
+		if (!SafeRead(g_base + kTransformType, &read) || read > 4096) {
+			return false;
+		}
+		type = read;
+	}
+	uintptr_t store = 0, head[8] = {}, page = 0; // a store: +0x08 / +0x10 pages, +0x38 components
+	uint32_t  index = 0;
+	if (!world.valid || !SafeRead(world.stores + type * 0x28ULL + 0x20, &store) || store == 0 || !SafeRead(store, &head) || head[1] == 0 || head[7] == 0) {
+		return false;
+	}
+	const uint64_t pageNumber = (handle >> 8) & 0xfff;
+	if (pageNumber >= (head[2] - head[1]) / 8 || !SafeRead(head[1] + pageNumber * 8, &page) || page == 0 || !SafeRead(page + (handle & 0xff) * 4ULL, &index)
+		|| (index & 0xfffff) == 0xfffff) {
+		return false;
+	}
+	float xyz[3] = {};
+	if (!SafeRead(head[7] + (index & 0xfffff) * 0xd0ULL + 0x70, &xyz)) {
+		return false;
+	}
+	memcpy(position, xyz, sizeof(xyz));
+	return std::isfinite(xyz[0]) && std::isfinite(xyz[1]) && std::isfinite(xyz[2]);
+}
+
+struct SlotString {
+	uintptr_t text;
+	uint64_t  length;
+};
+SlotString g_snowSaved {};
+bool       g_snowSwapped = false;
+int        g_swapTicks   = 0;
+char       g_snowPath[200];
+
+// Points the game's snow effect name at another particle file. False when the name does not
+// look the way it did when this was written.
+bool SwapSnowString(const char* path) {
+	SlotString& slot = WeatherField<SlotString>(kSnowString);
+	if (!g_snowSwapped) {
+		char head[5] = {};
+		if (slot.length == 0 || slot.length > 250 || !SafeRead(slot.text, &head) || memcmp(head, "data/", 5) != 0) {
+			return false;
+		}
+		g_snowSaved = slot;
+	}
+	snprintf(g_snowPath, sizeof(g_snowPath), "%s", path);
+	slot.text     = reinterpret_cast<uintptr_t>(g_snowPath);
+	slot.length   = strlen(g_snowPath);
+	g_snowSwapped = true;
+	g_swapTicks   = 0;
+	return true;
+}
+
+void RestoreSnowString() {
+	if (g_snowSwapped && g_weatherObject != 0) {
+		WeatherField<SlotString>(kSnowString) = g_snowSaved;
+	}
+	g_snowSwapped = false;
+}
+
+// ---- the sandstorm's field of blowing sand ---------------------------------------------------
+// The game's sand effects are patches a few tiles across that stay where they are put. A storm
+// lays them out on a grid in the world around the player: as the player walks, patches ahead
+// are created and patches left behind are removed. Where the player is comes from the game's
+// own weather effect, which the game keeps on the player: while a storm blows, the weather is
+// "snow", but with the snow effect's name pointed at the storm's first sand effect for the
+// moment the game creates it. That one is the storm's marker (and a patch that is always
+// where the player is); no snow is ever created.
+// Patches are created by a job in the game's entity world, the way the game creates its own.
+constexpr int kMaxPatches = kMaxLayers * (2 * kMaxFieldRadius + 3) * (2 * kMaxFieldRadius + 3) + 16; // the field and the cell kept around it
+enum : int { kPatchFree = 0, kPatchQueued = 1, kPatchUp = 2, kPatchFailed = 3 };
+struct Patch {
+	std::atomic<int>      state { kPatchFree };
+	std::atomic<bool>     cancel { false }; // queued, but no longer wanted: its job creates nothing
+	std::atomic<uint32_t> handle { kNoHandle };
+	int                   effect = 0;
+	int                   layer  = 0; // which of the three settings it belongs to
+	int                   column = 0; // grid cell
+	int                   row    = 0;
+	float                 position[3] {};
+};
+Patch    g_patches[kMaxPatches];
+bool     g_effectFailed[kSandEffectCount]; // the game would not create it: not tried again
+int      g_patchLogs  = 0;
+float    g_patchBudget = 0.0f; // patches that may be created now (builds up at the configured rate)
+uint64_t g_patchClock  = 0;    // when the budget was last topped up
+uint64_t g_patchAliveNext = 0; // when every patch is next checked against the game's entity table
+int      g_patchFreeHint  = 0; // where the search for a free slot starts
+// how the player is moving: where they were at the last look, their speed (world units a
+// second, smoothed), and how far the field leans ahead of them for it
+float    g_fieldSeenAt[2] {};
+float    g_fieldSpeed[2] {};
+float    g_fieldLean[2] {};
+uint64_t g_fieldSeenClock = 0;
+std::atomic<int> g_patchesUp { 0 };     // for "horror status"
+
+struct Job {
+	const void* const* vtable;
+	uint64_t           own[7];
+	uint8_t            inUse;
+	uint8_t            pad[7];
+};
+
+void* __cdecl JobDestroy(void* self, uint32_t) { return self; }
+
+void* __cdecl JobClone(void* self, void* target) {
+	memcpy(target, self, offsetof(Job, inUse)); // the caller marks the copy as in use
+	return target;
+}
+
+// Runs inside the game's entity world: creates the patch.
+void __cdecl JobInvoke(void* self, void*, void*) {
+	const uint64_t slot = static_cast<Job*>(self)->own[0];
+	if (slot >= kMaxPatches) {
+		return;
+	}
+	Patch& patch = g_patches[slot];
+	if (patch.state.load() != kPatchQueued) {
+		return;
+	}
+	if (patch.cancel.load()) {
+		patch.state = kPatchFree;
+		return;
+	}
+	alignas(16) float matrix[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, patch.position[0], patch.position[1], patch.position[2], 1 };
+	void*          renderer      = reinterpret_cast<RendererFn>(g_base + kRenderer)();
+	const uint32_t handle        = renderer != nullptr
+		? reinterpret_cast<SpawnEffectFn>(g_base + kSpawnEffect)(renderer, kSandEffects[patch.effect].path, matrix, kNoHandle, nullptr, 0)
+		: kNoHandle;
+	patch.handle = handle;
+	patch.state  = handle != kNoHandle ? kPatchUp : kPatchFailed;
+}
+
+const void* const kJobVtable[3] = { reinterpret_cast<const void*>(&JobDestroy), reinterpret_cast<const void*>(&JobInvoke), reinterpret_cast<const void*>(&JobClone) };
+
+void QueuePatch(int slot) {
+	Job job {};
+	job.vtable = kJobVtable;
+	job.own[0] = static_cast<uint64_t>(slot);
+	job.inUse  = 1;
+	reinterpret_cast<QueueJobFn>(g_base + kQueueJob)(reinterpret_cast<void*>(g_base + kEntityWorld), kNoHandle, &job, 1);
+}
+
+// Removes a patch: the game's own stop destroys the entity whose handle the weather object
+// holds, so the patch's handle is put there for the call and the game's own put back after.
+// (The game's stop checks the handle itself and does nothing for one that is gone.)
+void StopPatch(uint32_t handle) {
+	const uint32_t ownHandle = WeatherField<uint32_t>(0x64);
+	const int32_t  ownType   = WeatherField<int32_t>(0x68);
+	WeatherField<uint32_t>(0x64) = handle;
+	uint8_t flag                 = 1;
+	reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(reinterpret_cast<void*>(g_weatherObject), &flag, 1);
+	WeatherField<uint32_t>(0x64) = ownHandle;
+	WeatherField<int32_t>(0x68)  = ownType;
+}
+
+// The weather object is gone or new: nothing kept about the old one is true any more.
+void ForgetWeather() {
+	g_weatherObject  = 0;
+	g_weatherSetType = -2;
+	g_weatherKind    = -1;
+	g_weatherOn      = false;
+	g_snowSwapped    = false;
+}
+
+// The effect each of the three settings wants up right now, 0 = none: the first sandLayers of
+// the configured ones. The same effect in two settings is two fields of it, one over the
+// other: a thicker storm. Returns how many are wanted.
+int WantedEffects(int sandLayers, int* wanted) {
+	int count = 0;
+	for (int layer = 0; layer < kMaxLayers; ++layer) {
+		wanted[layer] = 0;
+	}
+	if (sandLayers > 0 && g_fieldReady) {
+		const int chosen[kMaxLayers] = { g_config.sandLayer1, g_config.sandLayer2, g_config.sandLayer3 };
+		int       configured         = 0;
+		for (int layer = 0; layer < kMaxLayers; ++layer) {
+			const int effect = chosen[layer];
+			if (effect <= 0 || effect >= kSandEffectCount) {
+				continue;
+			}
+			if (configured++ < sandLayers && !g_effectFailed[effect]) {
+				wanted[layer] = effect;
+				++count;
+			}
+		}
+	}
+	return count;
+}
+
+// A spot inside a grid cell that is always the same for that cell and layer, so the grid does
+// not show and layers of the same effect do not sit on top of each other: up to a quarter of
+// the spacing off the cell's centre either way.
+float PatchJitter(int column, int row, int layer, int axis) {
+	uint32_t h = static_cast<uint32_t>(column) * 0x9E3779B1u ^ static_cast<uint32_t>(row) * 0x85EBCA6Bu ^ static_cast<uint32_t>(layer * 2 + axis + 1) * 0xC2B2AE35u;
+	h ^= h >> 15;
+	h *= 0x2C1B3C6Du;
+	h ^= h >> 12;
+	return (static_cast<float>(h & 0xffff) / 65535.0f - 0.5f) * 0.5f;
+}
+
+// Brings the field in line with what is wanted. sandLayers: how many of the configured
+// effects should be up (0 or less: none). Returns true while there is still work to do.
+bool UpdateField(uint64_t now, int sandLayers) {
+	// how many patches may be created this time: the configured number a second, saved up for
+	// at most a quarter of a second (at least one), so a field never appears in one burst
+	// unless the rate asks for that
+	const float rate   = static_cast<float>(g_config.sandFieldRate);
+	const float saved  = rate / 4.0f > 1.0f ? rate / 4.0f : 1.0f;
+	const float passed = g_patchClock != 0 && now > g_patchClock ? static_cast<float>(now - g_patchClock) / 1000.0f : 1.0f;
+	g_patchClock       = now;
+	g_patchBudget      = g_patchBudget + rate * passed < saved ? g_patchBudget + rate * passed : saved;
+	int       wanted[kMaxLayers];
+	const int wantedCount = WantedEffects(sandLayers, wanted);
+
+	// nothing up, nothing queued and nothing wanted: the usual pass outside a storm
+	if (wantedCount == 0 && g_patchesUp.load(std::memory_order_relaxed) == 0) {
+		bool any = false;
+		for (const Patch& patch : g_patches) {
+			any = any || patch.state.load(std::memory_order_relaxed) != kPatchFree;
+		}
+		if (!any) {
+			g_fieldSeenClock = 0;
+			return false;
+		}
+	}
+
+	// where the player is: the game's weather entity, once the game has finished creating it
+	const WorldView world = ReadWorld();
+	float      centre[3]  = {};
+	const bool settled    = WeatherField<uint8_t>(0x60) == 0;
+	const bool haveCentre = wantedCount > 0 && g_weatherOn && g_weatherKind >= 100 && settled && HandleAlive(world, WeatherField<uint32_t>(0x64))
+		&& EntityPosition(world, WeatherField<uint32_t>(0x64), centre);
+	const float spacing   = static_cast<float>(g_config.sandFieldSpacing) * 2.0f; // world units
+	const int   radius    = g_config.sandFieldRadius;
+
+	// The field leans ahead of a moving player: a new patch needs a moment to fill with sand,
+	// so it is created further off in the direction of travel, about two seconds' worth but
+	// never more than the configured share of the field's reach. Leaning takes half a second;
+	// coming back when the player stops takes ten, so that stopping to fight and running on
+	// does not tear the field down behind and build it up again in front each time.
+	if (haveCentre) {
+		const float seconds = g_fieldSeenClock != 0 && now > g_fieldSeenClock ? static_cast<float>(now - g_fieldSeenClock) / 1000.0f : 0.0f;
+		const float most    = static_cast<float>(g_config.sandFieldLead) / 100.0f * static_cast<float>(radius) * spacing;
+		const float moved[2] = { centre[0] - g_fieldSeenAt[0], centre[2] - g_fieldSeenAt[1] };
+		const bool  travel  = seconds > 0.02f && seconds < 3.0f && std::fabs(moved[0]) < 400.0f && std::fabs(moved[1]) < 400.0f; // a jump (waypoint, portal) is not travel
+		if (travel) {
+			const float blend = seconds < 0.5f ? seconds / 0.5f : 1.0f;
+			g_fieldSpeed[0] += (moved[0] / seconds - g_fieldSpeed[0]) * blend;
+			g_fieldSpeed[1] += (moved[1] / seconds - g_fieldSpeed[1]) * blend;
+		} else if (seconds > 0.02f) {
+			g_fieldSpeed[0] = g_fieldSpeed[1] = 0.0f;
+			g_fieldLean[0] = g_fieldLean[1] = 0.0f;
+		}
+		const bool  moving = g_fieldSpeed[0] * g_fieldSpeed[0] + g_fieldSpeed[1] * g_fieldSpeed[1] > 8.0f * 8.0f; // faster than 4 sub-tiles a second
+		const float blend  = !travel ? 0.0f : moving ? (seconds < 0.5f ? seconds / 0.5f : 1.0f) : (seconds < 10.0f ? seconds / 10.0f : 1.0f);
+		for (int axis = 0; axis < 2; ++axis) {
+			const float ahead  = g_fieldSpeed[axis] * 2.0f;
+			const float target = !moving ? 0.0f : ahead > most ? most : ahead < -most ? -most : ahead;
+			g_fieldLean[axis] += (target - g_fieldLean[axis]) * blend;
+			g_fieldLean[axis]  = g_fieldLean[axis] > most ? most : g_fieldLean[axis] < -most ? -most : g_fieldLean[axis];
+			g_fieldSeenAt[axis] = centre[axis * 2];
+		}
+		g_fieldSeenClock = now;
+	} else {
+		g_fieldSeenClock = 0;
+		g_fieldSpeed[0] = g_fieldSpeed[1] = 0.0f;
+		g_fieldLean[0] = g_fieldLean[1] = 0.0f;
+	}
+	const float middle[2] = { centre[0] + g_fieldLean[0], centre[2] + g_fieldLean[1] };
+	const int   column    = static_cast<int>(std::floor(middle[0] / spacing));
+	const int   row       = static_cast<int>(std::floor(middle[1] / spacing));
+	// A patch is created when its cell is in the field, and removed when its cell's middle is
+	// more than a whole cell beyond the field's reach: half a cell of slack, so that a player
+	// standing on a cell's edge does not make patches come and go.
+	const float reach = (static_cast<float>(radius) + 1.0f) * spacing;
+
+	// every patch against the game's entity table, once a second, from one copy of the table
+	const bool checkAlive = now >= g_patchAliveNext && CopyHandleTable(world);
+	if (now >= g_patchAliveNext) {
+		g_patchAliveNext = now + 1000;
+	}
+
+	bool busy = false;
+	int  up   = 0;
+	bool present[kMaxLayers][2 * kMaxFieldRadius + 1][2 * kMaxFieldRadius + 1] = {};
+	for (Patch& patch : g_patches) {
+		const int state = patch.state.load(std::memory_order_relaxed);
+		if (state == kPatchFree) {
+			continue;
+		}
+		const int layer = patch.layer;
+		// kept while its setting still wants that effect and (when the player's place is known) it is within reach
+		const float x    = (static_cast<float>(patch.column) + 0.5f) * spacing - middle[0];
+		const float z    = (static_cast<float>(patch.row) + 0.5f) * spacing - middle[1];
+		const bool  keep = wanted[layer] == patch.effect && (!haveCentre || (std::fabs(x) <= reach && std::fabs(z) <= reach));
+		const int   dx   = patch.column - column;
+		const int   dy   = patch.row - row;
+		const bool  inField = keep && haveCentre && dx >= -radius && dx <= radius && dy >= -radius && dy <= radius;
+		if (state == kPatchQueued) {
+			if (!keep) {
+				patch.cancel = true; // its job has not run yet: it will create nothing
+			}
+			busy = true;
+		} else if (state == kPatchFailed) {
+			if (!g_effectFailed[patch.effect]) {
+				g_effectFailed[patch.effect] = true;
+				Log("sandstorm: effect %d (%s) left out - the game did not create it", patch.effect, kSandEffects[patch.effect].name);
+			}
+			patch.state = kPatchFree;
+			continue;
+		} else if (checkAlive && !AliveInCopy(patch.handle.load(std::memory_order_relaxed))) {
+			patch.state = kPatchFree; // it went with its scene
+			continue;
+		} else if (!keep) {
+			if (settled) {
+				StopPatch(patch.handle.load(std::memory_order_relaxed));
+				patch.state = kPatchFree;
+			} else {
+				busy = true; // the game is busy with its own effect: next time
+			}
+			continue;
+		} else {
+			++up;
+		}
+		if (inField) {
+			present[layer][dx + radius][dy + radius] = true;
+		}
+	}
+	g_patchesUp = up;
+
+	// missing patches, as many as the budget allows, the nearest to the player first
+	while (haveCentre) {
+		int   bestLayer = -1, bestX = 0, bestY = 0;
+		float bestDistance = 0.0f;
+		for (int layer = 0; layer < kMaxLayers; ++layer) {
+			if (wanted[layer] == 0) {
+				continue;
+			}
+			for (int dx = -radius; dx <= radius; ++dx) {
+				for (int dy = -radius; dy <= radius; ++dy) {
+					if (present[layer][dx + radius][dy + radius]) {
+						continue;
+					}
+					const float x        = (static_cast<float>(column + dx) + 0.5f) * spacing - centre[0];
+					const float z        = (static_cast<float>(row + dy) + 0.5f) * spacing - centre[2];
+					const float distance = x * x + z * z + static_cast<float>(layer); // layers of one cell in their own order
+					if (bestLayer < 0 || distance < bestDistance) {
+						bestLayer    = layer;
+						bestX        = dx;
+						bestY        = dy;
+						bestDistance = distance;
+					}
+				}
+			}
+		}
+		if (bestLayer < 0) {
+			break; // the field is whole
+		}
+		busy = true;
+		if (g_patchBudget < 1.0f) {
+			break;
+		}
+		int slot = -1;
+		for (int i = 0; i < kMaxPatches && slot < 0; ++i) {
+			const int candidate = (g_patchFreeHint + i) % kMaxPatches;
+			if (g_patches[candidate].state.load(std::memory_order_relaxed) == kPatchFree) {
+				slot = candidate;
+			}
+		}
+		if (slot < 0) {
+			break; // every slot is taken (queued patches free theirs as they come up or are removed)
+		}
+		g_patchFreeHint   = slot + 1;
+		Patch& patch      = g_patches[slot];
+		patch.effect      = wanted[bestLayer];
+		patch.layer       = bestLayer;
+		patch.column      = column + bestX;
+		patch.row         = row + bestY;
+		patch.position[0] = (static_cast<float>(patch.column) + 0.5f + PatchJitter(patch.column, patch.row, bestLayer, 0)) * spacing;
+		patch.position[1] = centre[1];
+		patch.position[2] = (static_cast<float>(patch.row) + 0.5f + PatchJitter(patch.column, patch.row, bestLayer, 1)) * spacing;
+		patch.handle      = kNoHandle;
+		patch.cancel      = false;
+		patch.state       = kPatchQueued;
+		QueuePatch(slot);
+		g_patchBudget -= 1.0f;
+		present[bestLayer][bestX + radius][bestY + radius] = true;
+		if (++g_patchLogs <= 6) {
+			Log("sandstorm: patch of effect %d (%s) at %.0f, %.0f, %.0f", patch.effect, kSandEffects[patch.effect].name, patch.position[0], patch.position[1], patch.position[2]);
+		}
+	}
+	return busy;
+}
+
+// Queued patches create nothing from now on (the plugin is going away, or the game is).
+void CancelField() {
+	for (Patch& patch : g_patches) {
+		if (patch.state.load() == kPatchQueued) {
+			patch.cancel = true;
+		}
+	}
+}
+
+// Once a second at most (ten times while the sandstorm's field is changing), and normally one
+// memory check: the weather object is remembered, and the game's update is only called when
+// the wanted weather changes (and every 10 s, in case the game stopped it on its own).
+// sandLayers: see SandLayers.
+void UpdateWeather(uint64_t now, int level, int sandLayers) {
 	if (!g_weatherReady || now < g_weatherNext) {
 		return;
 	}
 	g_weatherNext     = now + 1000;
 	const bool inGame = level > 0;
-	// turned off (also from the in-game settings menu): stop our rain and give the weather back
-	const bool wanted = inGame && g_config.weatherEnabled != 0;
+	// turned off (also from the in-game settings menu): stop our rain and give the weather back.
+	// A sandstorm's blowing sand does not need the rain and snow switched on.
+	const bool wanted = inGame && (g_config.weatherEnabled != 0 || sandLayers >= 0);
 	if (!wanted && !g_weatherHeld) {
 		return;
 	}
 	uint8_t flags[2] = { 2, 2 }; // +0x7a0 effects loaded, +0x7a1 override
 	if (g_weatherObject != 0 && (!SafeRead(g_weatherObject + 0x7a0, &flags) || flags[0] > 1 || flags[1] > 1)) {
-		g_weatherObject = 0; // gone or reused: look again
+		ForgetWeather(); // gone or reused: look again
 	}
 	if (g_weatherObject == 0) {
-		g_weatherObject  = FindWeather();
-		g_weatherSetType = -2;
+		ForgetWeather();
+		g_weatherObject = FindWeather();
 		if (g_weatherObject == 0 || !SafeRead(g_weatherObject + 0x7a0, &flags)) {
 			g_weatherObject = 0;
 			if (inGame && g_weatherLogs < 2) {
@@ -2147,37 +3010,126 @@ void UpdateWeather(uint64_t now, int level) {
 		return; // its effects are still loading; starting now would wait inside the game
 	}
 	auto* const weather = reinterpret_cast<void*>(g_weatherObject);
+
+	// the snow effect's name is pointed at a sand effect: it goes back as soon as the game has
+	// created the storm's marker from it, and nothing else happens until then
+	if (g_snowSwapped) {
+		if (WeatherField<uint8_t>(0x60) == 0) {
+			RestoreSnowString();
+		} else if (++g_swapTicks > 20) {
+			// five seconds: the effect could not be made, and the game would refuse every start from now on
+			WeatherField<uint8_t>(0x60) = 0;
+			RestoreSnowString();
+			const int effect = g_weatherKind - 100;
+			if (effect > 0 && effect < kSandEffectCount) {
+				g_effectFailed[effect] = true;
+				Log("sandstorm: effect %d (%s) left out - the game never finished creating it", effect, kSandEffects[effect].name);
+			}
+			g_weatherOn      = false;
+			g_weatherKind    = -1;
+			g_weatherSetType = -2;
+		} else {
+			g_weatherNext = now + 250;
+			return;
+		}
+	}
+
+	// the field first: patches that are no longer wanted go before the weather is handed back
+	const bool fieldBusy = UpdateField(now, wanted ? sandLayers : 0);
+	if (fieldBusy) {
+		g_weatherNext = now + 100;
+	}
+
 	if (!wanted) {
+		if (fieldBusy) {
+			return; // patches are still being removed: the weather is handed back when they are gone
+		}
 		if (g_weatherOn) {
 			uint8_t flag = 1;
 			reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(weather, &flag, 1);
 			g_weatherOn = false;
 		}
-		*reinterpret_cast<uint8_t*>(g_weatherObject + 0x7a1) = 0; // hand the weather back to the game
+		g_weatherKind                = -1;
+		WeatherField<uint8_t>(0x7a1) = 0; // hand the weather back to the game
 		g_weatherHeld    = false;
 		g_weatherSetType = -2;
 		return;
 	}
 	if (flags[1] != 1) {
-		*reinterpret_cast<uint8_t*>(g_weatherObject + 0x7a1) = 1;
+		WeatherField<uint8_t>(0x7a1) = 1;
 	}
-	g_weatherHeld    = true;
-	const int type = WeatherFor(level);
+	g_weatherHeld = true;
+
+	// what should be on: rain (0), snow (1), or nothing (-1). While a sandstorm blows it is the
+	// storm's marker: "snow" to the game, made from the first sand effect the storm wants
+	// (see UpdateField).
+	int       type   = -1;
+	int       marker = 0;
+	int       amount = g_config.weatherIntensity;
+	const int fall   = LevelFall(level);
+	if (sandLayers >= 0) {
+		int wantedEffects[kMaxLayers];
+		WantedEffects(sandLayers, wantedEffects);
+		for (int layer = kMaxLayers - 1; layer >= 0; --layer) {
+			if (wantedEffects[layer] != 0) {
+				marker = wantedEffects[layer];
+			}
+		}
+		if (marker != 0) {
+			type   = 1;
+			amount = 100;
+		}
+	} else if (g_config.weatherEnabled != 0 && (fall == kFallRain || fall == kFallSnow)) {
+		type = fall == kFallRain ? 0 : 1;
+	}
+	const int kind = marker != 0 ? 100 + marker : type;
+	// something else is playing (a storm's marker where snow should fall, another effect chosen
+	// for the storm): to the game they are all "snow", so it has to be stopped first
+	if (g_weatherOn && kind != g_weatherKind) {
+		uint8_t flag = 1;
+		reinterpret_cast<WeatherFn>(g_base + kWeatherStop)(weather, &flag, 1);
+		g_weatherOn      = false;
+		g_weatherSetType = -2;
+	}
+	// the sandstorm's marker went with its scene: ask for it again at once, not at the next reassert
+	if (g_weatherOn && marker != 0 && WeatherField<uint8_t>(0x60) == 0 && !HandleAlive(WeatherField<uint32_t>(0x64))) {
+		g_weatherSetType = -2;
+	}
 	if (type >= 0) {
-		if (type != g_weatherSetType || level != g_weatherSetLevel || g_config.weatherIntensity != g_weatherSetAmount || now >= g_weatherReassert) {
+		// Rain and snow are asked for again on a change of level or intensity and every ten
+		// seconds, in case the game stopped them. A storm's marker is watched directly (above),
+		// so it is only asked for when it is not there: asking again would have the game set
+		// an intensity the sand effect does not have, every time.
+		if (type != g_weatherSetType || (marker == 0 && (level != g_weatherSetLevel || amount != g_weatherSetAmount || now >= g_weatherReassert))) {
+			if (marker != 0 && !SwapSnowString(kSandEffects[marker].path)) {
+				g_effectFailed[marker] = true;
+				Log("sandstorm: effect %d (%s) left out - the game's weather effect names are not where they were expected", marker, kSandEffects[marker].name);
+				return;
+			}
 			struct {
 				int32_t type;
 				float   intensity;
-			} params { type, static_cast<float>(g_config.weatherIntensity) / 100.0f };
+			} params { type, static_cast<float>(amount) / 100.0f };
 			reinterpret_cast<WeatherFn>(g_base + kWeatherUpdate)(weather, &params, 1);
+			if (g_snowSwapped && WeatherField<uint8_t>(0x60) == 0) {
+				RestoreSnowString(); // nothing had to be created (it is already there), or it was made on the spot
+			}
 			if (!g_weatherOn && g_weatherLogs < 6) {
 				++g_weatherLogs;
-				Log("weather: %s started in level %d at %d%%", type == 0 ? "rain" : "snow", level, g_config.weatherIntensity);
+				if (marker != 0) {
+					Log("weather: the sandstorm's marker (effect %d, %s) started in level %d", marker, kSandEffects[marker].name, level);
+				} else {
+					Log("weather: %s started in level %d at %d%%", type == 0 ? "rain" : "snow", level, amount);
+				}
 			}
+			if (marker != 0) {
+				g_weatherNext = now + 250; // the snow name goes back, and the field is laid out, as soon as the marker is there
+			}
+			g_weatherKind      = kind;
 			g_weatherOn        = true;
 			g_weatherSetType   = type;
 			g_weatherSetLevel  = level;
-			g_weatherSetAmount = g_config.weatherIntensity;
+			g_weatherSetAmount = amount;
 			g_weatherReassert  = now + 10000;
 		}
 	} else if (g_weatherOn) {
@@ -2277,16 +3229,15 @@ void UpdateFalseHealth(bool inGame) {
 	}
 }
 
-// ---- whispers, stingers, heartbeat --------------------------------------------------
-uint64_t g_ambientNext   = 0;
-int      g_ravenLeft     = 0;
-uint64_t g_ravenNext     = 0;
-float    g_ravenGain     = 0.0f;
-uint64_t g_heartbeatNext = 0;
-uint32_t g_hauntSeen     = 0;
+// ---- whispers and stingers ----------------------------------------------------------
+uint64_t g_ambientNext = 0;
+int      g_ravenLeft   = 0;
+uint64_t g_ravenNext   = 0;
+float    g_ravenGain   = 0.0f;
+uint32_t g_hauntSeen   = 0;
 
 const Clip& AmbientClip(int first, int last) {
-	return g_ambient[RandRange(first, last)];
+	return g_ambient[ClientRange(first, last)];
 }
 
 void UpdateSounds(uint64_t now, int level) {
@@ -2303,13 +3254,13 @@ void UpdateSounds(uint64_t now, int level) {
 		}
 	}
 
-	if (g_config.ambientEnabled != 0 && inGame && !(level == 1 || level == 40 || level == 75 || level == 103 || level == 109)) {
+	if (g_config.ambientEnabled != 0 && inGame && !IsTown(level)) {
 		if (g_ambientNext == 0) {
-			g_ambientNext = now + static_cast<uint64_t>(RandRange(g_config.ambientMin, g_config.ambientMax)) * 1000;
+			g_ambientNext = now + static_cast<uint64_t>(ClientRange(g_config.ambientMin, g_config.ambientMax)) * 1000;
 		} else if (now >= g_ambientNext) {
-			g_ambientNext = now + static_cast<uint64_t>(RandRange(g_config.ambientMin, g_config.ambientMax)) * 1000;
-			const int   roll = static_cast<int>(Rand() % 100);
-			const float gain = volume * static_cast<float>(RandRange(35, 100)) / 100.0f;
+			g_ambientNext = now + static_cast<uint64_t>(ClientRange(g_config.ambientMin, g_config.ambientMax)) * 1000;
+			const int   roll = static_cast<int>(ClientRand() % 100);
+			const float gain = volume * static_cast<float>(ClientRange(35, 100)) / 100.0f;
 			if (roll < 32) {
 				PlayClip(AmbientClip(0, 3), gain); // breathing
 			} else if (roll < 70) {
@@ -2331,27 +3282,11 @@ void UpdateSounds(uint64_t now, int level) {
 
 	if (g_ravenLeft > 0 && now >= g_ravenNext) {
 		--g_ravenLeft;
-		g_ravenNext = now + static_cast<uint64_t>(RandRange(650, 1150));
+		g_ravenNext = now + static_cast<uint64_t>(ClientRange(650, 1150));
 		if (inGame) {
 			PlayClip(AmbientClip(16, 17), g_ravenGain);
 		} else {
 			g_ravenLeft = 0;
-		}
-	}
-
-	if (g_config.heartbeat != 0 && inGame) {
-		int percent = g_lifePercent.load();
-		if (g_haunting.load(std::memory_order_relaxed) && g_config.falseHealth != 0) {
-			percent = 3; // the orb says 1: the heart agrees
-		}
-		if (percent > 0 && percent < g_config.heartbeatBelow && now >= g_heartbeatNext) {
-			const float danger = 1.0f - static_cast<float>(percent) / static_cast<float>(g_config.heartbeatBelow);
-			g_heartbeatNext    = now + 1150 - static_cast<uint64_t>(danger * 600.0f);
-			PlayClip(g_heartbeatClip, static_cast<float>(g_config.heartbeatVolume) / 100.0f * (0.7f + 0.3f * danger));
-			static int logs = 0;
-			if (++logs <= 3) {
-				Log("sounds: heartbeat at %d%% life", percent);
-			}
 		}
 	}
 }
@@ -2369,11 +3304,30 @@ void SetUpClientExtras() {
 		&& g_ctx->CheckExpectedBytes(kWeatherStop, kStop, sizeof(kStop)) && g_ctx->CheckExpectedBytes(kWeatherStart, kStart, sizeof(kStart));
 	Log("weather: %s", g_weatherReady ? (g_config.weatherEnabled != 0 ? "on - the game's own rain and snow, always falling outdoors" : "available, switched off in the config")
 										: "off - weather code does not look as expected");
-	Log("sounds: whispers %s every %d-%d s, heartbeat %s below %d%% life", g_config.ambientEnabled != 0 ? "on" : "off", g_config.ambientMin, g_config.ambientMax,
-		g_config.heartbeat != 0 ? "on" : "off", g_config.heartbeatBelow);
+	const uint8_t kSpawn[16]    = { 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56 };
+	const uint8_t kQueue[16]    = { 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57 };
+	const uint8_t kGetRender[16] = { 0x48, 0x83, 0xec, 0x28, 0x65, 0x48, 0x8b, 0x04, 0x25, 0x58, 0x00, 0x00, 0x00, 0x8b, 0x0d, 0x75 };
+	g_fieldReady = g_weatherReady && g_ctx->CheckExpectedBytes(kSpawnEffect, kSpawn, sizeof(kSpawn)) && g_ctx->CheckExpectedBytes(kQueueJob, kQueue, sizeof(kQueue))
+		&& g_ctx->CheckExpectedBytes(kRenderer, kGetRender, sizeof(kGetRender));
+	{
+		// what a read of the game's memory costs on this system, for anyone tuning or debugging
+		LARGE_INTEGER frequency {}, from {}, to {};
+		QueryPerformanceFrequency(&frequency);
+		QueryPerformanceCounter(&from);
+		uint32_t value = 0;
+		for (int i = 0; i < 1000; ++i) {
+			static_cast<void>(SafeRead(g_base, &value));
+		}
+		QueryPerformanceCounter(&to);
+		Log("memory reads: %.2f microseconds each on this system", frequency.QuadPart > 0 ? static_cast<double>(to.QuadPart - from.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart) : 0.0);
+	}
+	Log("sandstorm: blowing sand %s", g_fieldReady ? "available" : "off - the game's effect code does not look as expected (the storm's fog and wind still work)");
+	Log("sounds: whispers %s every %d-%d s", g_config.ambientEnabled != 0 ? "on" : "off", g_config.ambientMin, g_config.ambientMax);
 }
 
 void ReleaseClientExtras() {
+	CancelField();
+	RestoreSnowString();
 	if (g_weatherHeld) {
 		const uintptr_t weather = g_weatherObject != 0 ? g_weatherObject : FindWeather();
 		if (weather != 0) {
@@ -2396,12 +3350,12 @@ void __cdecl OnOverlayFrame(const D2RL::PluginContext* context, const D2RL::Over
 		g_nextStrike = 0;
 	} else {
 		if (g_nextStrike == 0) {
-			g_nextStrike = now + static_cast<uint64_t>(RandRange(g_config.stormMinInterval, g_config.stormMaxInterval)) * 1000;
+			g_nextStrike = now + static_cast<uint64_t>(ClientRange(g_config.stormMinInterval, g_config.stormMaxInterval)) * 1000;
 		}
 		if (forced || now >= g_nextStrike) {
-			g_nextStrike = now + static_cast<uint64_t>(RandRange(g_config.stormMinInterval, g_config.stormMaxInterval)) * 1000;
+			g_nextStrike = now + static_cast<uint64_t>(ClientRange(g_config.stormMinInterval, g_config.stormMaxInterval)) * 1000;
 			// a close strike: bright flash, thunder right behind it, loud; far: the opposite
-			const int delay = RandRange(150, 2600);
+			const int delay = ClientRange(150, 2600);
 			const float closeness = 1.0f - static_cast<float>(delay - 150) / 2450.0f;
 			g_thunderAt   = now + static_cast<uint64_t>(delay);
 			g_thunderGain = (0.7f + 0.3f * closeness) * (area == Area::Indoor ? 0.45f : 1.0f);
@@ -2420,10 +3374,14 @@ void __cdecl OnOverlayFrame(const D2RL::PluginContext* context, const D2RL::Over
 		}
 	}
 
-	UpdateSky(now, g_level.load(std::memory_order_relaxed) > 0);
-	UpdateWeather(now, g_level.load(std::memory_order_relaxed));
-	UpdateFalseHealth(g_level.load(std::memory_order_relaxed) > 0);
-	UpdateSounds(now, g_level.load(std::memory_order_relaxed));
+	const int level = g_level.load(std::memory_order_relaxed);
+	UpdateSandstorm(now, level);
+	UpdateSky(now, level > 0, SandBlend());
+	if (now >= g_weatherNext) { // once a second, ten times while the sand field is changing
+		UpdateWeather(now, level, SandLayers(level));
+	}
+	UpdateFalseHealth(level > 0);
+	UpdateSounds(now, level);
 
 	if (g_thunderAt != 0 && now >= g_thunderAt) {
 		g_thunderAt = 0;
@@ -2529,6 +3487,8 @@ bool SetUpStorm() {
 	g_skyReady = nt->FileHeader.TimeDateStamp == kImageStamp && g_ctx->CheckExpectedBytes(0xf5b190, kSetTime, sizeof(kSetTime))
 		&& g_ctx->CheckExpectedBytes(0x7cd8fe, kOverride, sizeof(kOverride));
 	Log("storm: sky flash %s", g_skyReady ? (g_config.skyFlash != 0 ? "on" : "available, switched off in the config") : "off - renderer code does not look as expected");
+	Log("sandstorm: %s", !g_skyReady ? "off - renderer code does not look as expected"
+		: g_config.sandEnabled != 0 ? "on where the mod installed the storm look (Act 2 desert)" : "switched off in the config");
 
 	// reading and processing the sounds takes most of a second: done off the game's threads
 	StartMixer();
@@ -2548,7 +3508,7 @@ D2RL::ConsoleCommandResult __cdecl OnConsole(D2R::Game::Client*, const D2RL::Con
 	while (*args == ' ') {
 		++args;
 	}
-	char text[400];
+	char text[512];
 	if (strncmp(args, "spawn", 5) == 0) {
 		g_forceSpawn = true;
 		g_ctx->WriteConsoleMessage("Horrors in the Night: a phantom appears on the next game frame (not in town).");
@@ -2563,10 +3523,98 @@ D2RL::ConsoleCommandResult __cdecl OnConsole(D2R::Game::Client*, const D2RL::Con
 	} else if (strncmp(args, "strike", 6) == 0) {
 		g_forceStrike = true;
 		g_ctx->WriteConsoleMessage("Horrors in the Night: lightning strike.");
+	} else if (strncmp(args, "field", 5) == 0) {
+		// "horror field 2 20 24 50": patches out from the player, sub-tiles between them, patches created a second, lean ahead in percent
+		const char* c         = args + 5;
+		int         values[4] = { g_config.sandFieldRadius, g_config.sandFieldSpacing, g_config.sandFieldRate, g_config.sandFieldLead };
+		for (int given = 0; given < 4; ++given) {
+			while (*c == ' ' || *c == ',') {
+				++c;
+			}
+			if (*c < '0' || *c > '9') {
+				break;
+			}
+			values[given] = atoi(c);
+			while (*c >= '0' && *c <= '9') {
+				++c;
+			}
+		}
+		g_config.sandFieldRadius  = Clamp(values[0], 0, kMaxFieldRadius);
+		g_config.sandFieldSpacing = Clamp(values[1], 5, 60);
+		g_config.sandFieldRate    = Clamp(values[2], 1, 100);
+		g_config.sandFieldLead    = Clamp(values[3], 0, 100);
+		char value[16];
+		snprintf(value, sizeof(value), "%d", g_config.sandFieldRadius);
+		SaveConfigValue("sandstorm", "field_radius", value);
+		snprintf(value, sizeof(value), "%d", g_config.sandFieldSpacing);
+		SaveConfigValue("sandstorm", "field_spacing", value);
+		snprintf(value, sizeof(value), "%d", g_config.sandFieldRate);
+		SaveConfigValue("sandstorm", "field_rate", value);
+		snprintf(value, sizeof(value), "%d", g_config.sandFieldLead);
+		SaveConfigValue("sandstorm", "field_lead", value);
+		const int side = 2 * g_config.sandFieldRadius + 1;
+		snprintf(text, sizeof(text), "Horrors in the Night: blowing sand is %d by %d patches of each effect, %d sub-tiles apart (about %d sub-tiles across), created %d a second, leaning %d%% ahead when you move. Set with: horror field <how far out 0-%d> <spacing 5-60> <per second 1-100> <lean 0-100>",
+			side, side, g_config.sandFieldSpacing, side * g_config.sandFieldSpacing, g_config.sandFieldRate, g_config.sandFieldLead, kMaxFieldRadius);
+		g_ctx->WriteConsoleMessage(text);
+	} else if (strncmp(args, "fx", 2) == 0) {
+		// "horror fx" lists the effects; "horror fx 2 10 12" sets the sandstorm's layers (0 = none)
+		int         layers[kMaxLayers] = { 0, 0, 0 };
+		int         given              = 0;
+		const char* c                  = args + 2;
+		while (given < kMaxLayers) {
+			while (*c == ' ' || *c == ',') {
+				++c;
+			}
+			if (*c < '0' || *c > '9') {
+				break;
+			}
+			layers[given++] = Clamp(atoi(c), 0, kSandEffectCount - 1);
+			while (*c >= '0' && *c <= '9') {
+				++c;
+			}
+		}
+		if (given > 0) {
+			g_config.sandLayer1 = layers[0];
+			g_config.sandLayer2 = layers[1];
+			g_config.sandLayer3 = layers[2];
+			memset(g_effectFailed, 0, sizeof(g_effectFailed));
+			const char* const keys[kMaxLayers] = { "layer1", "layer2", "layer3" };
+			for (int i = 0; i < kMaxLayers; ++i) {
+				char value[16];
+				snprintf(value, sizeof(value), "%d", layers[i]);
+				SaveConfigValue("sandstorm", keys[i], value);
+			}
+		} else {
+			size_t used = 0;
+			text[0]     = '\0';
+			for (int i = 1; i < kSandEffectCount; ++i) {
+				used += static_cast<size_t>(snprintf(text + used, sizeof(text) - used, "%s%d %s", used > 0 ? ", " : "Effects: ", i, kSandEffects[i].name));
+				if (used > 150 || i == kSandEffectCount - 1) {
+					g_ctx->WriteConsoleMessage(text);
+					used    = 0;
+					text[0] = '\0';
+				}
+			}
+		}
+		snprintf(text, sizeof(text), "Horrors in the Night: sandstorm layers are %d (%s), %d (%s), %d (%s). Set them with: horror fx <first> [second] [third]", g_config.sandLayer1,
+			kSandEffects[Clamp(g_config.sandLayer1, 0, kSandEffectCount - 1)].name, g_config.sandLayer2, kSandEffects[Clamp(g_config.sandLayer2, 0, kSandEffectCount - 1)].name,
+			g_config.sandLayer3, kSandEffects[Clamp(g_config.sandLayer3, 0, kSandEffectCount - 1)].name);
+		g_ctx->WriteConsoleMessage(text);
+	} else if (strncmp(args, "sand", 4) == 0) {
+		if (!SandAllowed()) {
+			g_ctx->WriteConsoleMessage(g_config.sandEnabled == 0 ? "Horrors in the Night: sandstorms are switched off in the plugin's settings."
+				: g_modSandstorm.load() == 0 ? "Horrors in the Night: no sandstorm look installed - turn on Sandstorms in Act 2 (and Always night) in D2RMM and Install."
+				: "Horrors in the Night: sandstorms are not available with this game version.");
+		} else if (g_config.sandAlways != 0) {
+			g_ctx->WriteConsoleMessage("Horrors in the Night: the sandstorm is set to never stop (sandstorm always). Turn that off to have storms come and go, and to start and stop them here.");
+		} else {
+			g_forceSand = true;
+			g_ctx->WriteConsoleMessage("Horrors in the Night: sandstorm started or stopped (seen in the Act 2 desert).");
+		}
 	} else {
-		snprintf(text, sizeof(text), "Horrors in the Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, level %d. Commands: horror spawn | haunt | strike | status",
+		snprintf(text, sizeof(text), "Horrors in the Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, sandstorm %s (%d%%, %d sand patches up), level %d. Commands: horror spawn | haunt | strike | sand | fx | field | status",
 			g_serverReady.load() ? "on" : "off", g_diabloDead.load() ? ", stopped: Diablo is dead" : "", g_aliveCount.load(), g_totalSpawned.load(), g_totalDrains.load(), g_classes[1].count, g_classes[2].count,
-			g_classes[3].count, g_lightningRow[3], g_overlay != nullptr ? "on" : "off", g_level.load());
+			g_classes[3].count, g_lightningRow[3], g_overlay != nullptr ? "on" : "off", SandAllowed() ? "available" : "off", g_sandShown.load(), g_patchesUp.load(), g_level.load());
 		g_ctx->WriteConsoleMessage(text);
 	}
 	return D2RL::ConsoleCommandResult::Handled;
@@ -2577,9 +3625,9 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
 	.name        = "Horrors in the Night",
-	.version     = "1.0.5",
+	.version     = "1.1.0",
 	.author      = "Latedozer",
-	.description = "Phantom monsters that cannot be killed and vanish on a timer, plus lightning and thunder.",
+	.description = "Phantom monsters that cannot be killed and vanish on a timer, lightning and thunder, and sandstorms in the Act 2 desert.",
 	.flags       = D2RL::PluginFlags::Shared | D2RL::PluginFlags::NativeHooks,
 	.reserved    = {},
 };
@@ -2599,16 +3647,14 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 
 	LARGE_INTEGER counter {};
 	QueryPerformanceCounter(&counter);
-	g_rng ^= static_cast<uint64_t>(counter.QuadPart) * 0x2545F4914F6CDD1DULL;
-	if (g_rng == 0) {
-		g_rng = 1;
-	}
+	SeedRandom(static_cast<uint64_t>(counter.QuadPart));
 
 	Log("Horrors in the Night %s loading (D2R %s, SDK %s)", kPluginInfo.version, context->buildVersion != nullptr ? context->buildVersion : "?", D2RL_SDK_VERSION);
 	LoadConfig();
+	DefaultLevelInfo();
 	SetUpServer();
 	SetUpStorm();
-	static_cast<void>(context->RegisterConsoleCommand("horror", OnConsole, "Horrors in the Night: status, spawn, strike"));
+	static_cast<void>(context->RegisterConsoleCommand("horror", OnConsole, "Horrors in the Night: status, spawn, haunt, strike, sand, fx, field"));
 	JoinSettingsMenu();
 	if (!g_menuJoined) {
 		Log("settings menu: I Hate TOMLs not available at load (will try again when a game starts)");
