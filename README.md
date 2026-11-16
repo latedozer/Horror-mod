@@ -31,6 +31,8 @@ sandstorms and the whispers need the plugin as well.
   patch a few tiles across, so the storm lays them out on a grid around you and moves the grid as
   you walk. Which effects, how far out and how dense are settings; choosing the same effect more than
   once stacks it for a thicker storm.
+- Storms show in terror zones too: while lightning flashes or a sandstorm blows, the zone's own
+  lighting gives way to it as much as the storm shows, and comes back as it passes.
 
 **Phantoms** (plugin)
 - False monsters appear near you: a twin of a melee monster that belongs to the area you are in.
@@ -112,7 +114,8 @@ yourself (the `data` folder with `global/excel` and `hd/env/vis`) and checks wha
   mismatch. A future game patch will most likely switch features off until the addresses are updated.
 - Single player is what it was built and tested for. The plugin is marked as shared, so both TCP/IP
   players need the same version.
-- Other plugins that hook the same functions (the game frame, monster target search) may conflict.
+- Other plugins that hook the same functions (the game frame, monster target search, the lighting
+  blend) may conflict.
 - Phantom and townsfolk rows are appended to `monstats.txt`; Diablo is recognised by his vanilla row
   number (243).
 - Where it rains, snows or storms comes from `levels.txt` and `lvltypes.txt` when the mod is installed,

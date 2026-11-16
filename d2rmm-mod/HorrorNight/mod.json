@@ -2,7 +2,7 @@
   "name": "Horrors in the Night",
   "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horrors in the Night plugin) phantom monsters, lightning and thunder, and sandstorms in the Act 2 desert.",
   "author": "Latedozer",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "config": [
     {
       "id": "darknessEnabled",

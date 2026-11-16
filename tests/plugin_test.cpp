@@ -370,10 +370,13 @@ void TestSky() {
 	Check(stage() == 1 && blend() == 1.0f, "a lightning flash outshines the storm");
 	UpdateSky(now + 60000, true, 0.3f);
 	Check(stage() == 1 && Near(blend(), 0.3f), "...and the storm is still there after it");
+	Check(Near(g_eventYield.load(), 0.3f), "lighting events give way as much as the storm shows (30%)");
+	UpdateSky(now + 60000, true, 0.0f);
+	Check(g_eventYield.load() == 0.0f, "...and not at all once it is gone");
 
 	gameClock();
 	UpdateSky(now, false, 0.0f);
-	Check(!held() && stage() == 2, "out of the game: the clock is given back");
+	Check(!held() && stage() == 2 && g_eventYield.load() == 0.0f, "out of the game: the clock is given back");
 
 	g_base     = savedBase;
 	g_skyReady = false;
@@ -1068,6 +1071,185 @@ void TestWeather() {
 
 } // namespace
 
+// ---- the server tick without phantom rows: the storm's bolts still fall ----
+struct ServerFakes {
+	int      iterations = 0; // player walks
+	int      missiles   = 0;
+	int      sent       = 0;
+	int      lastRow    = -1;
+	int      level      = 2;
+	uint32_t player[8]  = { 0, 0, 1, 1 }; // type 0 (player), id 1, mode 1 (neutral)
+	uint8_t  room[64]   = {};
+	uint32_t missile[8] = { 3, 0, 99, 1 };
+} g_server;
+
+void FakeIterPlayers(Game* game, PlayerCallback callback, void* user) {
+	++g_server.iterations;
+	callback(game, g_server.player, user);
+}
+Room*    FakeUnitRoom(Unit*) { return g_server.room; }
+void     FakeUnitPos(Unit*, int32_t* xy) { xy[0] = xy[1] = 5000; }
+int32_t  FakeRoomLevel(Room*) { return g_server.level; }
+int32_t  FakeGetStat(Unit*, uint32_t, uint16_t) { return 100 * 256; }
+void     FakeSetStat(Unit*, uint32_t, int32_t, uint16_t) {}
+uint32_t FakeCastId(Game*) { return 1; }
+void*    FakePlayerClient(Unit*) { return g_server.room; }
+void     FakeSendMissile(void*, Game*, Unit*, int32_t) { ++g_server.sent; }
+Unit*    FakeMissileCreate(Game*, void* params) {
+	++g_server.missiles;
+	memcpy(&g_server.lastRow, static_cast<uint8_t*>(params) + 0x20, 4);
+	return g_server.missile;
+}
+
+void TestServerBolts() {
+	printf("-- server tick: bolts without phantom rows\n");
+	auto* image = static_cast<uint8_t*>(VirtualAlloc(nullptr, kFunctions[kCastId].rva + 64, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+	if (image == nullptr) {
+		Check(false, "memory for the stand-in game");
+		return;
+	}
+	// only what the bolts use: anything else the tick called would land in empty memory
+	PlaceJump(image + kFunctions[kIterPlayers].rva, reinterpret_cast<void*>(&FakeIterPlayers));
+	PlaceJump(image + kFunctions[kUnitRoom].rva, reinterpret_cast<void*>(&FakeUnitRoom));
+	PlaceJump(image + kFunctions[kUnitPos].rva, reinterpret_cast<void*>(&FakeUnitPos));
+	PlaceJump(image + kFunctions[kRoomLevel].rva, reinterpret_cast<void*>(&FakeRoomLevel));
+	PlaceJump(image + kFunctions[kGetStat].rva, reinterpret_cast<void*>(&FakeGetStat));
+	PlaceJump(image + kFunctions[kSetStat].rva, reinterpret_cast<void*>(&FakeSetStat));
+	PlaceJump(image + kFunctions[kMissileCreate].rva, reinterpret_cast<void*>(&FakeMissileCreate));
+	PlaceJump(image + kFunctions[kPlayerClient].rva, reinterpret_cast<void*>(&FakePlayerClient));
+	PlaceJump(image + kFunctions[kSendMissile].rva, reinterpret_cast<void*>(&FakeSendMissile));
+	PlaceJump(image + kFunctions[kCastId].rva, reinterpret_cast<void*>(&FakeCastId));
+
+	const uintptr_t savedBase = g_base;
+	g_base                    = reinterpret_cast<uintptr_t>(image);
+	g_config                  = Config {};
+	g_config.directHits       = 0;
+	DefaultLevelInfo();
+	for (ClassList& classes : g_classes) {
+		classes.count = 0; // the D2RMM mod was installed with its phantoms off
+	}
+	g_lightningRow[3]   = 742;
+	g_lightningSkill[3] = 57;
+	static uint8_t game[0x200];
+	memset(game, 0, sizeof(game));
+	game[0x106]    = 3; // data bank
+	uint32_t frame = 100;
+	const auto run = [&](int frames) {
+		for (int i = 0; i < frames; ++i) {
+			memcpy(game + 0x170, &frame, 4);
+			ServerTick(game);
+			++frame;
+		}
+	};
+	g_game = nullptr;
+	run(1); // a new game
+	const int walks = g_server.iterations;
+	run(50);
+	Check(g_server.iterations == walks && g_server.missiles == 0, "no phantom rows and no strike: the tick does nothing at all");
+	g_forceSpawn = true;
+	++g_flashRequests; // the client's storm asks for a strike
+	run(60);
+	Check(g_server.missiles == 3 && g_server.sent == 3 && g_server.lastRow == 742, "a strike still drops its bolts (3 flickers, 1 bolt each) with the phantoms off in the mod");
+	Check(!g_forceSpawn.load() && g_aliveCount.load() == 0, "...and a phantom asked for meanwhile is dropped instead of spawned");
+	g_server.level = 1; // the Rogue Encampment
+	++g_flashRequests;
+	run(60);
+	Check(g_server.missiles == 3, "no bolts in town");
+	g_base = savedBase;
+	g_game = nullptr;
+	VirtualFree(image, 0, MEM_RELEASE);
+}
+
+void TestHauntingLength() {
+	printf("-- how long a haunting lasts\n");
+	const Config saved = g_config;
+	const auto range   = [](int minLife, int maxLife, int* low, int* high) {
+		g_config.minLife = minLife;
+		g_config.maxLife = maxLife;
+		*low             = 1 << 30;
+		*high            = 0;
+		for (int i = 0; i < 400; ++i) {
+			const int seconds = static_cast<int>(HauntingFrames() / 25);
+			*low              = seconds < *low ? seconds : *low;
+			*high             = seconds > *high ? seconds : *high;
+		}
+	};
+	int low = 0, high = 0;
+	range(4, 10, &low, &high);
+	Check(low == 8 && high == 10, "short stays: a haunting lasts at least 8 seconds (8-10 s)");
+	range(20, 60, &low, &high);
+	Check(low >= 20 && high <= 60 && low < 30, "long stays: never under the shortest stay (20-60 s)");
+	range(4, 6, &low, &high);
+	Check(low == 4 && high == 6, "stays of 8 seconds or less: the configured range (4-6 s)");
+	g_config = saved;
+}
+
+// ---- storms over terror zones: the lighting blend ----
+std::vector<std::pair<float, uint8_t>> g_blends;
+void FakeBlend(void*, void*, float weight, uint8_t isEvent) { g_blends.push_back({ weight, isEvent }); }
+
+void TestEventYield() {
+	printf("-- storms over lighting events\n");
+	g_originalBlend = FakeBlend;
+	g_eventYield    = 0.0f;
+	BlendHook(nullptr, nullptr, 1.0f, 0); // the time of day
+	BlendHook(nullptr, nullptr, 1.0f, 1); // a terror zone's look
+	Check(g_blends.size() == 2 && g_blends[0].first == 1.0f && g_blends[1].first == 1.0f && g_blends[1].second == 1, "no storm: every profile goes in as the game asks");
+	g_eventYield = 0.6f;
+	BlendHook(nullptr, nullptr, 0.7f, 0);
+	BlendHook(nullptr, nullptr, 1.0f, 1);
+	Check(g_blends[2].first == 0.7f && Near(g_blends[3].first, 0.4f), "a storm at 60%: the event's weight goes down to 40%, the time of day's is left alone");
+	g_eventYield = 1.0f;
+	BlendHook(nullptr, nullptr, 0.5f, 1);
+	Check(g_blends[4].first == 0.0f, "at full strength the event gives way entirely");
+	g_eventYield    = 0.0f;
+	g_originalBlend = nullptr;
+	g_blends.clear();
+}
+
+// ---- log lines from a thread of their own ----
+struct LoggedLine {
+	char  text[64];
+	DWORD thread;
+};
+std::vector<LoggedLine> g_logged;
+void __cdecl CaptureLog(const D2RL::PluginContext*, const char* message) noexcept {
+	LoggedLine line {};
+	snprintf(line.text, sizeof(line.text), "%s", message);
+	line.thread = GetCurrentThreadId();
+	g_logged.push_back(line);
+}
+
+void TestLogThread() {
+	printf("-- log lines\n");
+	static D2RL::PluginApi api {};
+	api.apiSize = D2RL::PluginApiSize;
+	api.logInfo = api.logWarn = api.logError = CaptureLog;
+	static D2RL::PluginContext context {};
+	context.contextSize = static_cast<uint32_t>(sizeof(context));
+	context.api         = &api;
+	const D2RL::PluginContext* saved = g_ctx;
+	g_ctx                            = &context;
+	const DWORD self                 = GetCurrentThreadId();
+
+	StartLogThread();
+	Log("one");
+	Log("two %d", 2);
+	Log("three");
+	StopLogThread();
+	const bool inOrder = g_logged.size() == 3 && strcmp(g_logged[0].text, "one") == 0 && strcmp(g_logged[1].text, "two 2") == 0 && strcmp(g_logged[2].text, "three") == 0;
+	bool otherThread = !g_logged.empty();
+	for (const LoggedLine& line : g_logged) {
+		otherThread = otherThread && line.thread != self;
+	}
+	Check(inOrder, "every line reaches the loader, in order");
+	Check(otherThread, "...from the log thread, not from the thread that logged");
+	Log("four");
+	Check(g_logged.size() == 4 && g_logged[3].thread == self, "once the thread has stopped, lines are written directly");
+	g_ctx = saved;
+	g_logged.clear();
+}
+
 int main(int argc, char** argv) {
 	setvbuf(stdout, nullptr, _IONBF, 0);
 	SeedRandom(12345);
@@ -1077,6 +1259,10 @@ int main(int argc, char** argv) {
 	TestSandstorm();
 	TestSky();
 	TestWeather();
+	TestServerBolts();
+	TestHauntingLength();
+	TestEventYield();
+	TestLogThread();
 	printf("%s\n", g_failures == 0 ? "all checks passed" : "SOME CHECKS FAILED");
 	return g_failures == 0 ? 0 : 1;
 }

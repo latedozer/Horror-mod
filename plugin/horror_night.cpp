@@ -40,6 +40,21 @@ const D2RL::DataTableService* g_tables  = nullptr;
 HMODULE                       g_module  = nullptr;
 uintptr_t                     g_base    = 0;
 
+// D2RLoader stores every log line on the disk before its log call returns (on a slow drive that
+// took a quarter of a second or more), and much of this plugin runs on the game's own threads.
+// So lines go to the loader from a thread of their own: the game's threads only copy the text
+// into a queue. Before that thread runs (and after it has stopped) lines are written directly.
+constexpr int     kLogQueue = 64;
+char              g_logLines[kLogQueue][512];
+int               g_logFirst = 0; // under g_logLock
+int               g_logCount = 0; // under g_logLock
+SRWLOCK           g_logLock  = SRWLOCK_INIT;
+HANDLE            g_logEvent  = nullptr;
+HANDLE            g_logThread = nullptr;
+std::atomic<bool> g_logAsync { false };
+std::atomic<bool> g_logStop { false };
+std::atomic<int>  g_logDropped { 0 };
+
 void Log(const char* format, ...) {
 	if (g_ctx == nullptr) {
 		return;
@@ -49,7 +64,84 @@ void Log(const char* format, ...) {
 	va_start(args, format);
 	vsnprintf(text, sizeof(text), format, args);
 	va_end(args);
-	g_ctx->LogInfo(text);
+	if (!g_logAsync.load(std::memory_order_acquire)) {
+		g_ctx->LogInfo(text);
+		return;
+	}
+	bool queued = false;
+	AcquireSRWLockExclusive(&g_logLock);
+	if (g_logCount < kLogQueue) {
+		memcpy(g_logLines[(g_logFirst + g_logCount) % kLogQueue], text, sizeof(text));
+		++g_logCount;
+		queued = true;
+	}
+	ReleaseSRWLockExclusive(&g_logLock);
+	if (queued) {
+		SetEvent(g_logEvent);
+	} else {
+		++g_logDropped;
+	}
+}
+
+// Hands every waiting line to the loader, oldest first. False when there was none.
+bool WriteWaitingLines() {
+	bool wrote = false;
+	for (;;) {
+		char text[512];
+		bool have = false;
+		AcquireSRWLockExclusive(&g_logLock);
+		if (g_logCount > 0) {
+			memcpy(text, g_logLines[g_logFirst], sizeof(text));
+			g_logFirst = (g_logFirst + 1) % kLogQueue;
+			--g_logCount;
+			have = true;
+		}
+		ReleaseSRWLockExclusive(&g_logLock);
+		if (!have) {
+			return wrote;
+		}
+		g_ctx->LogInfo(text);
+		wrote = true;
+	}
+}
+
+DWORD WINAPI LogThread(void*) {
+	for (;;) {
+		WaitForSingleObject(g_logEvent, INFINITE);
+		WriteWaitingLines();
+		if (g_logStop.load()) {
+			WriteWaitingLines();
+			return 0;
+		}
+	}
+}
+
+void StartLogThread() {
+	g_logStop   = false;
+	g_logEvent  = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+	g_logThread = g_logEvent != nullptr ? CreateThread(nullptr, 0, LogThread, nullptr, 0, nullptr) : nullptr;
+	g_logAsync.store(g_logThread != nullptr, std::memory_order_release);
+}
+
+// The queue is emptied before the thread ends; lines logged from then on are written directly.
+void StopLogThread() {
+	if (g_logThread == nullptr) {
+		return;
+	}
+	g_logStop = true;
+	SetEvent(g_logEvent);
+	if (WaitForSingleObject(g_logThread, 3000) != WAIT_OBJECT_0) {
+		return; // still busy with the disk: it keeps the queue, nothing is freed under it
+	}
+	g_logAsync.store(false, std::memory_order_release);
+	WriteWaitingLines(); // anything queued after its last look
+	CloseHandle(g_logThread);
+	CloseHandle(g_logEvent);
+	g_logThread = nullptr;
+	g_logEvent  = nullptr;
+	if (g_logDropped.load() > 0) {
+		Log("log: %d lines were left out (more than %d were waiting at once)", g_logDropped.load(), kLogQueue);
+	}
 }
 
 // The server tick, the client (overlay) callback and the sound mixer run on different threads,
@@ -980,6 +1072,13 @@ void LogHauntFailure(int level, const char* why) {
 	}
 }
 
+// How long a haunting lasts, in game frames: the phantoms' stay, but at least 8 seconds when the
+// longest stay allows it, so there is time for the dead to get up. Never below the shortest stay.
+uint32_t HauntingFrames() {
+	const int shortest = g_config.maxLife > 8 && g_config.minLife < 8 ? 8 : g_config.minLife;
+	return static_cast<uint32_t>(RandRange(shortest, g_config.maxLife)) * 25;
+}
+
 bool StartHaunting(Game* game, const ClassList* classes, Unit* player, uint32_t frame, int level) {
 	const int act       = ActOfLevel(level);
 	int       townsfolk = PickPhantomClass(game, classes, level, act); // one of this level's own undead
@@ -997,7 +1096,7 @@ bool StartHaunting(Game* game, const ClassList* classes, Unit* player, uint32_t 
 	}
 	int32_t origin[2] = { 0, 0 };
 	Engine<UnitPosFn>(kUnitPos)(player, origin);
-	const uint32_t life = static_cast<uint32_t>(RandRange(g_config.maxLife > 8 ? 8 : g_config.minLife, g_config.maxLife)) * 25;
+	const uint32_t life = HauntingFrames();
 
 	bool placed = false;
 	for (int attempt = 0; attempt < 8 && !placed; ++attempt) {
@@ -1090,13 +1189,16 @@ void ServerTick(Game* game) {
 	}
 	g_lastFrame = frame;
 
+	// No phantom rows in this game's data (the D2RMM mod's phantoms are off): no phantoms, but the
+	// storm's bolts still fall, so this tick goes on for them.
 	const ClassList* classes = ClassesFor(game);
 	if (classes == nullptr) {
-		return;
+		g_forceSpawn = false;
+		g_forceHaunt = false;
 	}
 
 	// Most frames have nothing to do: no phantom alive, no strike in progress, no spawn due.
-	if (g_phantomCount == 0 && g_flashHitsLeft <= 0 && g_flashRequests.load(std::memory_order_relaxed) == g_flashSeen && frame < g_nextSpawn
+	if (g_phantomCount == 0 && g_flashHitsLeft <= 0 && g_flashRequests.load(std::memory_order_relaxed) == g_flashSeen && (classes == nullptr || frame < g_nextSpawn)
 		&& g_testRow.load(std::memory_order_relaxed) < 0 && !g_forceSpawn.load(std::memory_order_relaxed) && !g_forceHaunt.load(std::memory_order_relaxed)) {
 		if (g_haunting.load(std::memory_order_relaxed)) {
 			g_haunting = false;
@@ -1124,6 +1226,10 @@ void ServerTick(Game* game) {
 	}
 
 	WorldFlash(game, players);
+	if (classes == nullptr) {
+		g_aliveCount = 0;
+		return; // no phantoms in this game's data
+	}
 
 	// existing phantoms: expire, lose, or hit
 	for (int i = 0; i < g_phantomCount;) {
@@ -2268,6 +2374,30 @@ float SkyIntensity(uint64_t now) {
 	return best;
 }
 
+// ---- storms over terror zones ----
+// The scene's lighting is made each frame by the game's profile blend (0xf58c40): every profile
+// added moves the scene toward itself by its weight, so the ones added before it count for
+// (1 - weight). The time of day goes in first, then any lighting event: a terror zone's look,
+// Tainted Sun, Diablo's arrival. At full weight an event hides the time of day, and with it the
+// lightning's flash and the sandstorm, which work through the time of day. So while a flash or a
+// storm shows, events go in with their weight lowered by as much: the storm shows through a
+// terror zone the way it does outside one, and the zone's look comes back as it passes.
+using BlendFn = void (*)(void* scene, void* profile, float weight, uint8_t isEvent);
+constexpr uint32_t kBlendRva          = 0xf58c40;
+const uint8_t      kBlendEntry[16]    = { 0xf3, 0x0f, 0x11, 0x54, 0x24, 0x18, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x57 };
+BlendFn            g_originalBlend    = nullptr;
+std::atomic<float> g_eventYield { 0.0f }; // 0-1: how much of an event's weight gives way to the storm now
+
+void BlendHook(void* scene, void* profile, float weight, uint8_t isEvent) {
+	if (isEvent != 0) {
+		const float yield = g_eventYield.load(std::memory_order_relaxed);
+		if (yield > 0.0f) {
+			weight *= 1.0f - (yield < 1.0f ? yield : 1.0f);
+		}
+	}
+	g_originalBlend(scene, profile, weight, isEvent);
+}
+
 // sand: 0-1, how much of the sandstorm look to show (the same blend the lightning uses).
 void UpdateSky(uint64_t now, bool inGame, float sand) {
 	if (!g_skyReady) {
@@ -2287,6 +2417,7 @@ void UpdateSky(uint64_t now, bool inGame, float sand) {
 			g_skyHolding = false;
 		}
 		g_peakCount = 0;
+		g_eventYield.store(0.0f, std::memory_order_relaxed);
 		return;
 	}
 	g_skyHolding = true;
@@ -2299,6 +2430,7 @@ void UpdateSky(uint64_t now, bool inGame, float sand) {
 	if (sand > intensity) {
 		intensity = sand;
 	}
+	g_eventYield.store(intensity > 0.001f ? (intensity < 1.0f ? intensity : 1.0f) : 0.0f, std::memory_order_relaxed);
 	if (intensity > 0.001f) {
 		SkyWrite(1, intensity > 1.0f ? 1.0f : intensity, 1);
 	} else {
@@ -3487,6 +3619,14 @@ bool SetUpStorm() {
 	g_skyReady = nt->FileHeader.TimeDateStamp == kImageStamp && g_ctx->CheckExpectedBytes(0xf5b190, kSetTime, sizeof(kSetTime))
 		&& g_ctx->CheckExpectedBytes(0x7cd8fe, kOverride, sizeof(kOverride));
 	Log("storm: sky flash %s", g_skyReady ? (g_config.skyFlash != 0 ? "on" : "available, switched off in the config") : "off - renderer code does not look as expected");
+	if (g_skyReady) {
+		const D2RL::PluginApi*       api   = g_ctx->GetApi();
+		D2RL::InlineHookRegistration blend = D2RL::MakeInlineHook(kBlendRva, kBlendEntry, sizeof(kBlendEntry), reinterpret_cast<void*>(&BlendHook),
+			reinterpret_cast<void**>(&g_originalBlend));
+		const bool hooked = api != nullptr && D2RL::ApiInstallInlineHook(api) != nullptr && D2RL::ApiInstallInlineHook(api)(g_ctx, &blend) && g_originalBlend != nullptr;
+		Log("storm: %s", hooked ? "lightning and sandstorms show through terror zones and other lighting events"
+			: "could not hook the lighting blend - in terror zones the flash and the sandstorm look stay hidden");
+	}
 	Log("sandstorm: %s", !g_skyReady ? "off - renderer code does not look as expected"
 		: g_config.sandEnabled != 0 ? "on where the mod installed the storm look (Act 2 desert)" : "switched off in the config");
 
@@ -3625,7 +3765,7 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
 	.name        = "Horrors in the Night",
-	.version     = "1.1.0",
+	.version     = "1.1.1",
 	.author      = "Latedozer",
 	.description = "Phantom monsters that cannot be killed and vanish on a timer, lightning and thunder, and sandstorms in the Act 2 desert.",
 	.flags       = D2RL::PluginFlags::Shared | D2RL::PluginFlags::NativeHooks,
@@ -3644,6 +3784,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 	}
 	g_ctx  = context;
 	g_base = context->exeBase;
+	StartLogThread();
 
 	LARGE_INTEGER counter {};
 	QueryPerformanceCounter(&counter);
@@ -3664,6 +3805,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 
 D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
 	g_serverReady = false;
+	g_eventYield  = 0.0f;
 	if (g_skyHolding) {
 		SkyWrite(5, 0.0f, 0);
 		g_skyHolding = false;
@@ -3675,6 +3817,7 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
 		g_soundLoader = nullptr;
 	}
 	StopMixer();
+	StopLogThread(); // last: everything above may still log
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
