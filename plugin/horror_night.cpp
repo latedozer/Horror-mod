@@ -185,8 +185,34 @@ int      ClientRange(int low, int high) { return g_clientRng.Range(low, high); }
 
 // ---------------------------------------------------------------- config
 
+// The most effects a storm's blowing field can be made of. The ash storm has a setting for each;
+// the sandstorm has three.
+constexpr int kMaxLayers = 6;
+
+// One kind of storm the plugin makes itself (see "storms" below): its settings.
+struct StormConfig {
+	int enabled;
+	int calmMin;      // seconds between storms...
+	int calmMax;
+	int lengthMin;    // ...and how long one blows
+	int lengthMax;
+	int fade;         // seconds a storm takes to roll in or die down
+	int strength;     // how much of the mod's storm look a storm reaches, percent
+	int always;       // the storm never stops (0: storms come and go on the clock above)
+	int dust;         // the blowing field on (0 = off)
+	int layer[kMaxLayers]; // the effects that make up the field: numbers into the kind's effect
+	                  // list, 0 = none. They come in one after another as a storm builds.
+	int fieldRadius;  // patches of each effect out from the one you stand in (5 = 11 x 11)
+	int fieldSpacing; // sub-tiles between patches
+	int fieldRate;    // patches created per second while the field is being laid out
+	int fieldLead;    // how far the field leans ahead of a moving player, percent of its reach
+	int windVolume;
+	int indoorWind;   // muffled wind in its town and underground while a storm blows
+	int windLowPass;  // Hz: only the wind's tones below this are heard, 0 = all of it
+};
+
 struct Config {
-	int phantomsEnabled = 1;
+	int phantomsEnabled = 0;
 	int minInterval     = 40;
 	int maxInterval     = 140;
 	int minLife         = 4;
@@ -204,24 +230,33 @@ struct Config {
 	int weatherEnabled   = 1;  // drive the game's own rain and snow
 	int weatherIntensity = 100;
 
-	int sandEnabled      = 1;  // sandstorms in the Act 2 desert
-	int sandCalmMin      = 60; // seconds between storms...
-	int sandCalmMax      = 240;
-	int sandLengthMin    = 45; // ...and how long one blows
-	int sandLengthMax    = 120;
-	int sandFade         = 8;  // seconds a storm takes to roll in or die down
-	int sandStrength     = 100; // how much of the mod's storm look a storm reaches, percent
-	int sandAlways       = 1;  // the storm never stops (0: storms come and go on the clock above)
-	int sandDust         = 100; // blowing sand on (0 = off)
-	int sandLayer1       = 6;  // the effects that make up the blowing sand: numbers into kSandEffects,
-	int sandLayer2       = 5;  // 0 = none. They come in one after another as a storm builds.
-	int sandLayer3       = 3;  // (thin sand, then huge clouds now and then, then steady haze)
-	int sandFieldRadius  = 5;  // patches of each effect out from the one you stand in (5 = 11 x 11)
-	int sandFieldSpacing = 17; // sub-tiles between patches
-	int sandFieldRate    = 30; // patches created per second while the field is being laid out
-	int sandFieldLead    = 50; // how far the field leans ahead of a moving player, percent of its reach
-	int sandWindVolume   = 70;
-	int sandIndoorWind   = 1;  // muffled wind in town and underground while a storm blows
+	// the Act 2 sandstorm: on, calm 60-240 s, storms of 45-120 s, 8 s to roll in, full strength,
+	// never stopping, blowing sand on; thin sand, then huge clouds now and then, then steady haze
+	// (numbers into kSandEffects); an 11 x 11 field, 17 sub-tiles apart, 30 patches a second,
+	// leaning half its reach ahead; wind at 70%, muffled in town and underground
+	StormConfig sand = { 1, 60, 240, 45, 120, 8, 100, 1, 100, { 6, 5, 3 }, 5, 17, 30, 50, 70, 1, 0 };
+	// the Act 4 ash storm: the same clock; wide ash and embers, fog, wide haze, lava glow and
+	// smoke columns (numbers into kAshEffects), one layer left empty; an 11 x 11 field, 20
+	// sub-tiles apart
+	StormConfig ash = { 1, 60, 240, 45, 120, 8, 100, 1, 100, { 6, 9, 11, 17, 14, 0 }, 5, 20, 30, 50, 190, 1, 100 };
+	// the ash storm's meteors: burning rocks from the sky while a storm shows
+	int meteors           = 1;
+	int fireVolume        = 70; // the fire under the storm: a low roar and crackling embers
+	int burstVolume       = 70; // now and then: steam, falling rock
+	int burstMinInterval  = 10; // seconds between them
+	int burstMaxInterval  = 40;
+	int meteorMinInterval = 40; // seconds between volleys...
+	int meteorMaxInterval = 80;
+	int meteorsMin        = 50; // ...of this many meteors
+	int meteorsMax        = 50;
+	int meteorGapMin      = 40; // milliseconds from one meteor of a volley to the next (0: together)
+	int meteorGapMax      = 240;
+	int meteorMinDistance = 3;  // how near and how far from you they land, in tiles
+	int meteorMaxDistance = 22;
+	int meteorHits        = 1;  // one of a volley can be aimed at you: its marker shows where
+	int meteorHitChance   = 6;  // percent of volleys with an aimed one
+	int meteorHitDamage   = 5;  // percent of MAXIMUM life it burns if you are still there (never kills): lowest...
+	int meteorHitDamageMax = 10; // ...and highest
 
 	int ambientEnabled   = 1;
 	int ambientMin       = 70;
@@ -257,11 +292,11 @@ int Clamp(int value, int low, int high) {
 // What a sandstorm can blow past you: the game's own particle effects, by number ("horror fx").
 // 0 means none. They are effects the game places around Lut Gholein. Each is a patch some
 // tens of sub-tiles across; a storm lays them out on a grid around you.
-struct SandEffect {
+struct StormEffect {
 	const char* name;
 	const char* path;
 };
-const SandEffect kSandEffects[] = {
+const StormEffect kSandEffects[] = {
 	{ "none", nullptr },
 	{ "haze, gusting", "data/hd/vfx/particles/env/Act2/town/FX_sandHaze_low_med_gusts.particles" },
 	{ "haze, scattered gusts", "data/hd/vfx/particles/env/Act2/town/FX_sandHaze_low_med_scatteredgusts.particles" },
@@ -274,7 +309,33 @@ const SandEffect kSandEffects[] = {
 	{ "ribbons, tall", "data/hd/vfx/particles/env/Act2/town/FX_SandRibbons_MoreHeight_Variance.particles" },
 };
 constexpr int kSandEffectCount = static_cast<int>(sizeof(kSandEffects) / sizeof(kSandEffects[0]));
-constexpr int kMaxLayers       = 3;
+bool          g_sandFailed[kSandEffectCount]; // the game would not create it: not tried again
+
+// The same for the Act 4 ash storm ("horror ashfx"): effects the game places in Act 4's own maps,
+// and its ash and embers, which no map places.
+const StormEffect kAshEffects[] = {
+	{ "none", nullptr },
+	{ "wind, small", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_Wind_Small_10x10.particles" },
+	{ "wind, huge", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_Wind_Huge_40x40.particles" },
+	{ "wind ribbons", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_WindRibbons_20x40.particles" },
+	{ "ash and embers, small", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_10x10.particles" },
+	{ "ash and embers", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_20x20.particles" },
+	{ "ash and embers, wide", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_30x30.particles" },
+	{ "ash and embers, high", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_high_30x30.particles" },
+	{ "ash and embers, long", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_10x30.particles" },
+	{ "fog", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_fog_30x30.particles" },
+	{ "haze", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_HoleHaze_20x20.particles" },
+	{ "haze, wide", "data/hd/vfx/particles/env/Act4/Mesa/fx_act4mesa_holehaze_40x40.particles" },
+	{ "steam", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_HoleSteam_20x20.particles" },
+	{ "steam, wide", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_HoleSteam_40x40.particles" },
+	{ "smoke column", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_ChimneyPit_20x20.particles" },
+	{ "smoke column, wide", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_ChimneyPit_40x40.particles" },
+	{ "falling rocks", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_FallingRocks.particles" },
+	{ "lava glow", "data/hd/vfx/particles/env/Act4/Expansion/FX_Act4Expansion_lavaglow_30x30.particles" },
+	{ "embers (Travincal's)", "data/hd/vfx/particles/env/Act3/Travincal/FX_Act3Travincal_embers_20x20.particles" },
+};
+constexpr int kAshEffectCount = static_cast<int>(sizeof(kAshEffects) / sizeof(kAshEffects[0]));
+bool          g_ashFailed[kAshEffectCount];
 constexpr int kMaxFieldRadius  = 5;
 
 // Every setting, once: where it lives in horror-night.toml, its limits, and (when it has a
@@ -314,24 +375,66 @@ const Setting kSettings[] = {
 	{ "weather", "intensity", &g_config.weatherIntensity, false, 5, 100, 5, "How heavy (%)", nullptr },
 
 	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Sandstorms", nullptr },
-	{ "sandstorm", "enabled", &g_config.sandEnabled, true, 0, 1, 0, "Sandstorms in the Act 2 desert", "Needs the mod's Sandstorms in Act 2 option, with Always night on." },
-	{ "sandstorm", "min_calm", &g_config.sandCalmMin, false, 5, 3600, 5, "Shortest calm (seconds)", "Time between storms is random between the two." },
-	{ "sandstorm", "max_calm", &g_config.sandCalmMax, false, 5, 7200, 5, "Longest calm (seconds)", nullptr },
-	{ "sandstorm", "min_length", &g_config.sandLengthMin, false, 5, 3600, 5, "Shortest storm (seconds)", nullptr },
-	{ "sandstorm", "max_length", &g_config.sandLengthMax, false, 5, 7200, 5, "Longest storm (seconds)", nullptr },
-	{ "sandstorm", "fade", &g_config.sandFade, false, 1, 60, 1, "Roll-in time (seconds)", "How long a storm takes to build up, and to die down." },
-	{ "sandstorm", "strength", &g_config.sandStrength, false, 10, 100, 5, "Storm strength (%)", "How far the storm look goes at its height." },
-	{ "sandstorm", "always", &g_config.sandAlways, true, 0, 1, 0, "The storm never stops", nullptr },
-	{ "sandstorm", "dust", &g_config.sandDust, false, 0, 100, 100, "Blowing sand", "0 turns the blowing sand off, 100 on." },
-	{ "sandstorm", "layer1", &g_config.sandLayer1, false, 0, kSandEffectCount - 1, 1, "Blowing sand: first effect", "Effect numbers: type horror fx in the console for the list. 0 is none." },
-	{ "sandstorm", "layer2", &g_config.sandLayer2, false, 0, kSandEffectCount - 1, 1, "Blowing sand: second effect", "Comes in as the storm builds." },
-	{ "sandstorm", "layer3", &g_config.sandLayer3, false, 0, kSandEffectCount - 1, 1, "Blowing sand: third effect", "Comes in last, at the height of the storm." },
-	{ "sandstorm", "field_radius", &g_config.sandFieldRadius, false, 0, kMaxFieldRadius, 1, "Blowing sand: how far out (patches)", "Patches of each effect in every direction from where you stand. 1 is a 3 by 3 field, 2 is 5 by 5, up to 5 (11 by 11). More costs frame rate." },
-	{ "sandstorm", "field_spacing", &g_config.sandFieldSpacing, false, 5, 60, 1, "Blowing sand: patch spacing (sub-tiles)", "Distance between patches. Smaller is denser, larger reaches further." },
-	{ "sandstorm", "field_rate", &g_config.sandFieldRate, false, 1, 100, 1, "Blowing sand: patches created per second", "How fast the field fills in as a storm builds and as you walk. Low lets it creep in, high is all at once. A dense field needs a high rate to keep up with you running." },
-	{ "sandstorm", "field_lead", &g_config.sandFieldLead, false, 0, 100, 5, "Blowing sand: lean ahead when moving (%)", "While you move the field shifts ahead of you, so sand has time to build up before you reach it. 0 keeps it centred on you, 100 puts you at its back edge." },
-	{ "sandstorm", "wind_volume", &g_config.sandWindVolume, false, 0, 300, 5, "Wind volume (%)", nullptr },
-	{ "sandstorm", "indoor_wind", &g_config.sandIndoorWind, true, 0, 1, 0, "Muffled wind in town and underground", nullptr },
+	{ "sandstorm", "enabled", &g_config.sand.enabled, true, 0, 1, 0, "Sandstorms in the Act 2 desert", "Needs the mod's Sandstorms in Act 2 option, with Always night on." },
+	{ "sandstorm", "min_calm", &g_config.sand.calmMin, false, 5, 3600, 5, "Shortest calm (seconds)", "Time between storms is random between the two." },
+	{ "sandstorm", "max_calm", &g_config.sand.calmMax, false, 5, 7200, 5, "Longest calm (seconds)", nullptr },
+	{ "sandstorm", "min_length", &g_config.sand.lengthMin, false, 5, 3600, 5, "Shortest storm (seconds)", nullptr },
+	{ "sandstorm", "max_length", &g_config.sand.lengthMax, false, 5, 7200, 5, "Longest storm (seconds)", nullptr },
+	{ "sandstorm", "fade", &g_config.sand.fade, false, 1, 60, 1, "Roll-in time (seconds)", "How long a storm takes to build up, and to die down." },
+	{ "sandstorm", "strength", &g_config.sand.strength, false, 10, 100, 5, "Storm strength (%)", "How far the storm look goes at its height." },
+	{ "sandstorm", "always", &g_config.sand.always, true, 0, 1, 0, "The storm never stops", nullptr },
+	{ "sandstorm", "dust", &g_config.sand.dust, false, 0, 100, 100, "Blowing sand", "0 turns the blowing sand off, 100 on." },
+	{ "sandstorm", "layer1", &g_config.sand.layer[0], false, 0, kSandEffectCount - 1, 1, "Blowing sand: first effect", "Effect numbers: type horror fx in the console for the list. 0 is none." },
+	{ "sandstorm", "layer2", &g_config.sand.layer[1], false, 0, kSandEffectCount - 1, 1, "Blowing sand: second effect", "Comes in as the storm builds." },
+	{ "sandstorm", "layer3", &g_config.sand.layer[2], false, 0, kSandEffectCount - 1, 1, "Blowing sand: third effect", "Comes in last, at the height of the storm." },
+	{ "sandstorm", "field_radius", &g_config.sand.fieldRadius, false, 0, kMaxFieldRadius, 1, "Blowing sand: how far out (patches)", "Patches of each effect in every direction from where you stand. 1 is a 3 by 3 field, 2 is 5 by 5, up to 5 (11 by 11). More costs frame rate." },
+	{ "sandstorm", "field_spacing", &g_config.sand.fieldSpacing, false, 5, 60, 1, "Blowing sand: patch spacing (sub-tiles)", "Distance between patches. Smaller is denser, larger reaches further." },
+	{ "sandstorm", "field_rate", &g_config.sand.fieldRate, false, 1, 100, 1, "Blowing sand: patches created per second", "How fast the field fills in as a storm builds and as you walk. Low lets it creep in, high is all at once. A dense field needs a high rate to keep up with you running." },
+	{ "sandstorm", "field_lead", &g_config.sand.fieldLead, false, 0, 100, 5, "Blowing sand: lean ahead when moving (%)", "While you move the field shifts ahead of you, so sand has time to build up before you reach it. 0 keeps it centred on you, 100 puts you at its back edge." },
+	{ "sandstorm", "wind_volume", &g_config.sand.windVolume, false, 0, 300, 5, "Wind volume (%)", nullptr },
+	{ "sandstorm", "wind_low_pass", &g_config.sand.windLowPass, false, 0, 2000, 10, "Wind: only tones below (Hz)", "0 is the whole wind. A low number leaves only its bass: a deep roar without the whistling." },
+	{ "sandstorm", "indoor_wind", &g_config.sand.indoorWind, true, 0, 1, 0, "Muffled wind in town and underground", nullptr },
+
+	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Ash storms", nullptr },
+	{ "ashstorm", "enabled", &g_config.ash.enabled, true, 0, 1, 0, "Ash storms in Act 4", "Needs the mod's Ash storms in Act 4 option, with Always night on." },
+	{ "ashstorm", "min_calm", &g_config.ash.calmMin, false, 5, 3600, 5, "Shortest calm (seconds)", "Time between storms is random between the two." },
+	{ "ashstorm", "max_calm", &g_config.ash.calmMax, false, 5, 7200, 5, "Longest calm (seconds)", nullptr },
+	{ "ashstorm", "min_length", &g_config.ash.lengthMin, false, 5, 3600, 5, "Shortest storm (seconds)", nullptr },
+	{ "ashstorm", "max_length", &g_config.ash.lengthMax, false, 5, 7200, 5, "Longest storm (seconds)", nullptr },
+	{ "ashstorm", "fade", &g_config.ash.fade, false, 1, 60, 1, "Roll-in time (seconds)", "How long a storm takes to build up, and to die down." },
+	{ "ashstorm", "strength", &g_config.ash.strength, false, 10, 100, 5, "Storm strength (%)", "How far the storm look goes at its height." },
+	{ "ashstorm", "always", &g_config.ash.always, true, 0, 1, 0, "The storm never stops", nullptr },
+	{ "ashstorm", "dust", &g_config.ash.dust, false, 0, 100, 100, "Blowing ash", "0 turns the blowing ash off, 100 on." },
+	{ "ashstorm", "layer1", &g_config.ash.layer[0], false, 0, kAshEffectCount - 1, 1, "Blowing ash: first effect", "Effect numbers: type horror ashfx in the console for the list. 0 is none." },
+	{ "ashstorm", "layer2", &g_config.ash.layer[1], false, 0, kAshEffectCount - 1, 1, "Blowing ash: second effect", "Comes in as the storm builds." },
+	{ "ashstorm", "layer3", &g_config.ash.layer[2], false, 0, kAshEffectCount - 1, 1, "Blowing ash: third effect", "The effects come in one after another, the last at the height of the storm." },
+	{ "ashstorm", "layer4", &g_config.ash.layer[3], false, 0, kAshEffectCount - 1, 1, "Blowing ash: fourth effect", "0 is none. Every effect is another field of patches: more costs frame rate." },
+	{ "ashstorm", "layer5", &g_config.ash.layer[4], false, 0, kAshEffectCount - 1, 1, "Blowing ash: fifth effect", nullptr },
+	{ "ashstorm", "layer6", &g_config.ash.layer[5], false, 0, kAshEffectCount - 1, 1, "Blowing ash: sixth effect", nullptr },
+	{ "ashstorm", "field_radius", &g_config.ash.fieldRadius, false, 0, kMaxFieldRadius, 1, "Blowing ash: how far out (patches)", "Patches of each effect in every direction from where you stand. 1 is a 3 by 3 field, up to 5 (11 by 11). More costs frame rate." },
+	{ "ashstorm", "field_spacing", &g_config.ash.fieldSpacing, false, 5, 60, 1, "Blowing ash: patch spacing (sub-tiles)", "Distance between patches. Smaller is denser, larger reaches further." },
+	{ "ashstorm", "field_rate", &g_config.ash.fieldRate, false, 1, 100, 1, "Blowing ash: patches created per second", "How fast the field fills in as a storm builds and as you walk." },
+	{ "ashstorm", "field_lead", &g_config.ash.fieldLead, false, 0, 100, 5, "Blowing ash: lean ahead when moving (%)", "While you move the field shifts ahead of you. 0 keeps it centred on you, 100 puts you at its back edge." },
+	{ "ashstorm", "wind_volume", &g_config.ash.windVolume, false, 0, 300, 5, "Wind volume (%)", nullptr },
+	{ "ashstorm", "wind_low_pass", &g_config.ash.windLowPass, false, 0, 2000, 10, "Wind: only tones below (Hz)", "0 is the whole wind. A low number leaves only its bass: a deep roar without the whistling. 100 as shipped." },
+	{ "ashstorm", "indoor_wind", &g_config.ash.indoorWind, true, 0, 1, 0, "Muffled wind in the Pandemonium Fortress", "The fire is muffled with it." },
+	{ "ashstorm", "fire_volume", &g_config.fireVolume, false, 0, 300, 5, "Fire volume (%)", "The roar and crackle of fire under the storm. 0 is none." },
+	{ "ashstorm", "burst_volume", &g_config.burstVolume, false, 0, 300, 5, "Steam and rockfall volume (%)", "Now and then, out in the storm: a vent of steam, rock coming down. 0 is none." },
+	{ "ashstorm", "burst_min_interval", &g_config.burstMinInterval, false, 2, 3600, 1, "Steam and rockfall: shortest wait (seconds)", "Time between them is random between the two." },
+	{ "ashstorm", "burst_max_interval", &g_config.burstMaxInterval, false, 2, 7200, 1, "Steam and rockfall: longest wait (seconds)", nullptr },
+	{ "ashstorm", "meteors", &g_config.meteors, true, 0, 1, 0, "Meteors fall during a storm", "Burning rocks from the sky. They are for show: only one aimed at you can hurt (below)." },
+	{ "ashstorm", "meteor_min_interval", &g_config.meteorMinInterval, false, 2, 3600, 1, "Meteors: shortest wait (seconds)", "Time between volleys is random between the two." },
+	{ "ashstorm", "meteor_max_interval", &g_config.meteorMaxInterval, false, 2, 7200, 1, "Meteors: longest wait (seconds)", nullptr },
+	{ "ashstorm", "meteors_min", &g_config.meteorsMin, false, 1, 60, 1, "Meteors: fewest in a volley", nullptr },
+	{ "ashstorm", "meteors_max", &g_config.meteorsMax, false, 1, 60, 1, "Meteors: most in a volley", nullptr },
+	{ "ashstorm", "meteor_gap_min", &g_config.meteorGapMin, false, 0, 2000, 40, "Meteors: shortest gap in a volley (ms)", "Time from one meteor of a volley to the next, random between the two. The game counts in steps of 40 ms; 0 lets them fall together." },
+	{ "ashstorm", "meteor_gap_max", &g_config.meteorGapMax, false, 0, 2000, 40, "Meteors: longest gap in a volley (ms)", nullptr },
+	{ "ashstorm", "meteor_min_distance", &g_config.meteorMinDistance, false, 2, 30, 1, "Meteors: nearest one lands (tiles)", nullptr },
+	{ "ashstorm", "meteor_max_distance", &g_config.meteorMaxDistance, false, 4, 34, 1, "Meteors: farthest one lands (tiles)", nullptr },
+	{ "ashstorm", "meteor_hits", &g_config.meteorHits, true, 0, 1, 0, "A meteor can be aimed at you", "Its red marker shows where it will land: step out before it does. Off: meteors never hurt." },
+	{ "ashstorm", "meteor_hit_chance", &g_config.meteorHitChance, false, 0, 100, 1, "Volleys with an aimed meteor (%)", nullptr },
+	{ "ashstorm", "meteor_hit_damage_min", &g_config.meteorHitDamage, false, 0, 100, 1, "Aimed meteor: least damage (% of max life)", "A hit always leaves at least 1 life." },
+	{ "ashstorm", "meteor_hit_damage_max", &g_config.meteorHitDamageMax, false, 0, 100, 1, "Aimed meteor: most damage (% of max life)", nullptr },
 
 	{ nullptr, nullptr, nullptr, false, 0, 0, 0, "Whispers", nullptr },
 	{ "sounds", "enabled", &g_config.ambientEnabled, true, 0, 1, 0, "Whispers and distant sounds", "Breathing, moans, screams and ravens outside town." },
@@ -412,14 +515,22 @@ void NormalizeConfig() {
 	atLeast(g_config.maxInterval, g_config.minInterval);
 	atLeast(g_config.maxLife, g_config.minLife);
 	atLeast(g_config.maxDistance, g_config.minDistance);
-	atLeast(g_config.sandCalmMax, g_config.sandCalmMin);
-	atLeast(g_config.sandLengthMax, g_config.sandLengthMin);
+	for (StormConfig* storm : { &g_config.sand, &g_config.ash }) {
+		atLeast(storm->calmMax, storm->calmMin);
+		atLeast(storm->lengthMax, storm->lengthMin);
+	}
 	atLeast(g_config.ambientMax, g_config.ambientMin);
 	atLeast(g_config.stormMaxInterval, g_config.stormMinInterval);
 	atLeast(g_config.hitsMax, g_config.hitsMin);
 	atLeast(g_config.directHitDamageMax, g_config.directHitDamage);
 	atMost(g_config.maxGroup, g_config.maxAlive);
 	atMost(g_config.boltMinDistance, g_config.boltSpread);
+	atLeast(g_config.meteorMaxInterval, g_config.meteorMinInterval);
+	atLeast(g_config.burstMaxInterval, g_config.burstMinInterval);
+	atLeast(g_config.meteorsMax, g_config.meteorsMin);
+	atLeast(g_config.meteorGapMax, g_config.meteorGapMin);
+	atLeast(g_config.meteorMaxDistance, g_config.meteorMinDistance);
+	atLeast(g_config.meteorHitDamageMax, g_config.meteorHitDamage);
 }
 
 // Reads the text of horror-night.toml into g_config. The text is cut up while it is read.
@@ -811,7 +922,7 @@ int               g_levelsLoaded = 0;
 // What the D2RMM mod says about each level (the extra columns of levels.tsv) and which of its
 // options this install was built with (the "#mod" line). An older mod writes neither: then the
 // vanilla level lists in DefaultLevelInfo apply.
-enum : uint8_t { kFallNone = 0, kFallRain = 1, kFallSnow = 2, kFallSand = 3 };
+enum : uint8_t { kFallNone = 0, kFallRain = 1, kFallSnow = 2, kFallSand = 3, kFallAsh = 4 };
 struct LevelInfo {
 	uint8_t weather; // what falls in the level itself
 	uint8_t under;   // what falls outside, for a level that is indoors or sheltered
@@ -822,6 +933,7 @@ bool             g_levelTableFromMod = false;
 std::atomic<int> g_modKnown { 0 };     // levels.tsv carried the "#mod" line
 std::atomic<int> g_modSkyFlash { 0 };  // the "day" lighting of stormy areas is the lit-by-lightning look
 std::atomic<int> g_modSandstorm { 0 }; // the "day" lighting of the Act 2 desert is the sandstorm look
+std::atomic<int> g_modAshstorm { 0 };  // the "day" lighting of Act 4 is the ash storm look
 
 void DefaultLevelInfo() {
 	memset(g_levelInfo, 0, sizeof(g_levelInfo));
@@ -897,6 +1009,34 @@ int                   g_flashLogs    = 0;
 int                   g_lightningRow[4] = { -1, -1, -1, -1 }; // missiles row by data bank
 int                   g_lightningSkill[4] = { 57, 57, 57, 57 }; // the row's Skill (Thunder Storm)
 std::atomic<int>      g_testRow { -1 };        // "horror test <row>": fire this missiles row once
+
+// Meteors (the ash storm): the same arrangement. The client's storm asks for a volley, the next
+// server frames drop its meteors around each player who is out in the ash. An aimed one shows
+// the Meteor's marker under the player and is remembered: when it lands, a player still standing
+// in it is burned.
+struct MeteorBurn {
+	uint32_t playerId;
+	uint32_t due; // the frame it lands
+	int32_t  x;
+	int32_t  y;
+};
+constexpr uint32_t    kMeteorFallFrames = 60; // the Meteor row's Range: from its appearing to its landing
+constexpr int         kMeteorReach      = 5;  // how far from where it lands it still burns, in the game's position units
+constexpr int         kMaxBurns         = 16;
+std::atomic<uint32_t> g_meteorRequests { 0 };
+std::atomic<bool>     g_forceMeteor { false }; // "horror meteor": a volley now, also outside the ash
+uint32_t              g_meteorSeen     = 0;
+int                   g_meteorsLeft    = 0;     // meteors still to come in the current volley
+uint32_t              g_meteorNext     = 0;     // frame of the next one
+bool                  g_meteorAimed    = false; // this volley's first meteor is aimed at the players
+bool                  g_meteorAnywhere = false; // asked for in the console
+MeteorBurn            g_burns[kMaxBurns];
+int                   g_burnCount      = 0;
+int                   g_meteorRow[4]    = { -1, -1, -1, -1 }; // missiles rows by data bank: the plain meteor...
+int                   g_meteorHitRow[4] = { -1, -1, -1, -1 }; // ...and the one with the marker
+int                   g_meteorSkill[4]  = { 56, 56, 56, 56 }; // their Skill (Meteor)
+std::atomic<int>      g_totalMeteors { 0 };
+std::atomic<int>      g_totalBurns { 0 };
 
 
 
@@ -1171,6 +1311,7 @@ void SpawnGroup(Game* game, const ClassList* classes, Unit* player, uint32_t fra
 }
 
 void WorldFlash(Game* game, const struct PlayerList& players);
+void WorldMeteors(Game* game, const struct PlayerList& players);
 
 void ServerTick(Game* game) {
 	const uint32_t frame = GameFrame(game);
@@ -1186,6 +1327,9 @@ void ServerTick(Game* game) {
 		g_flashHitsLeft = 0;
 		g_flashNextHit  = 0;
 		g_flashSeen     = g_flashRequests.load(std::memory_order_relaxed);
+		g_meteorsLeft   = 0;
+		g_burnCount     = 0;
+		g_meteorSeen    = g_meteorRequests.load(std::memory_order_relaxed);
 	}
 	g_lastFrame = frame;
 
@@ -1197,9 +1341,13 @@ void ServerTick(Game* game) {
 		g_forceHaunt = false;
 	}
 
-	// Most frames have nothing to do: no phantom alive, no strike in progress, no spawn due.
-	if (g_phantomCount == 0 && g_flashHitsLeft <= 0 && g_flashRequests.load(std::memory_order_relaxed) == g_flashSeen && (classes == nullptr || frame < g_nextSpawn)
-		&& g_testRow.load(std::memory_order_relaxed) < 0 && !g_forceSpawn.load(std::memory_order_relaxed) && !g_forceHaunt.load(std::memory_order_relaxed)) {
+	// Most frames have nothing to do: no phantom alive, no strike or volley in progress, no spawn
+	// due. (No spawn is ever due with phantoms switched off or Diablo dead: without those two
+	// tests every frame of such a game would go the long way round and find nothing to do.)
+	const bool spawnDue = classes != nullptr && g_config.phantomsEnabled != 0 && !g_diabloDead.load(std::memory_order_relaxed) && frame >= g_nextSpawn;
+	if (g_phantomCount == 0 && g_flashHitsLeft <= 0 && g_flashRequests.load(std::memory_order_relaxed) == g_flashSeen && !spawnDue
+		&& g_testRow.load(std::memory_order_relaxed) < 0 && !g_forceSpawn.load(std::memory_order_relaxed) && !g_forceHaunt.load(std::memory_order_relaxed)
+		&& g_meteorsLeft <= 0 && g_burnCount == 0 && g_meteorRequests.load(std::memory_order_relaxed) == g_meteorSeen && !g_forceMeteor.load(std::memory_order_relaxed)) {
 		if (g_haunting.load(std::memory_order_relaxed)) {
 			g_haunting = false;
 		}
@@ -1226,6 +1374,7 @@ void ServerTick(Game* game) {
 	}
 
 	WorldFlash(game, players);
+	WorldMeteors(game, players);
 	if (classes == nullptr) {
 		g_aliveCount = 0;
 		return; // no phantoms in this game's data
@@ -1363,21 +1512,21 @@ void StrikeNear(Game* game, Unit* player, int missileRow, int skill, int minDist
 		}
 	}
 	if (++g_flashLogs <= 12) {
-		Log("storm: bolt row %d skill %d at %d,%d (player %d,%d) -> %s, server unit id %u mode %u", missileRow, skill, x, y, origin[0], origin[1],
+		Log("storm: missile row %d skill %d at %d,%d (player %d,%d) -> %s, server unit id %u mode %u", missileRow, skill, x, y, origin[0], origin[1],
 			missile != nullptr ? "created" : "FAILED", missile != nullptr ? UnitId(missile) : 0, missile != nullptr ? UnitMode(missile) : 0);
 	}
 }
 
 // A direct hit: a share of MAXIMUM life, but it always leaves at least 1 life.
-void LightningDamage(Unit* player) {
-	const int percent = RandRange(g_config.directHitDamage, g_config.directHitDamageMax);
+// Takes a share of MAXIMUM life, but always leaves at least 1 life. False when nothing was taken.
+bool HurtPlayer(Unit* player, int percent, const char* what) {
 	if (percent <= 0) {
-		return;
+		return false;
 	}
 	const int32_t life    = Engine<GetStatFn>(kGetStat)(player, 6, 0);
 	const int32_t maxLife = Engine<GetStatFn>(kGetStat)(player, 7, 0);
 	if (life <= 256 || maxLife <= 0) {
-		return;
+		return false;
 	}
 	int64_t left = life - static_cast<int64_t>(maxLife) * percent / 100;
 	if (left < 256) {
@@ -1386,8 +1535,13 @@ void LightningDamage(Unit* player) {
 	Engine<SetStatFn>(kSetStat)(player, 6, static_cast<int32_t>(left), 0);
 	static int logs = 0;
 	if (++logs <= 10) {
-		Log("storm: DIRECT HIT %d%% - life %d -> %d of max %d (1/256 units)", percent, life, static_cast<int32_t>(left), maxLife);
+		Log("storm: %s %d%% - life %d -> %d of max %d (1/256 units)", what, percent, life, static_cast<int32_t>(left), maxLife);
 	}
+	return true;
+}
+
+void LightningDamage(Unit* player) {
+	HurtPlayer(player, RandRange(g_config.directHitDamage, g_config.directHitDamageMax), "DIRECT HIT");
 }
 
 int RowSkill(uint32_t bank, int row) {
@@ -1475,6 +1629,82 @@ void WorldFlash(Game* game, const PlayerList& players) {
 	}
 }
 
+// The ash storm's meteors. A volley is a few meteors in quick succession, each landing
+// somewhere around every player who is out in the ash. With aimed meteors on and the roll made,
+// the volley's first is aimed: it lands where the player stands now, with the Meteor's marker on
+// the ground, and burns a player who is still there when it lands.
+void WorldMeteors(Game* game, const PlayerList& players) {
+	const uint32_t frame = GameFrame(game);
+
+	// aimed meteors that have landed
+	for (int i = 0; i < g_burnCount;) {
+		const MeteorBurn burn = g_burns[i];
+		if (static_cast<int32_t>(frame - burn.due) < 0) {
+			++i;
+			continue;
+		}
+		for (int p = 0; p < players.count; ++p) {
+			if (UnitId(players.units[p]) != burn.playerId) {
+				continue;
+			}
+			int32_t at[2] = { 0, 0 };
+			Engine<UnitPosFn>(kUnitPos)(players.units[p], at);
+			const int64_t dx = at[0] - burn.x;
+			const int64_t dy = at[1] - burn.y;
+			if (dx * dx + dy * dy <= kMeteorReach * kMeteorReach
+				&& HurtPlayer(players.units[p], RandRange(g_config.meteorHitDamage, g_config.meteorHitDamageMax), "METEOR HIT")) {
+				++g_totalBurns;
+			}
+		}
+		g_burns[i] = g_burns[--g_burnCount];
+	}
+
+	const uint32_t requests = g_meteorRequests.load();
+	const bool     forced   = g_forceMeteor.exchange(false);
+	if (requests != g_meteorSeen || forced) {
+		g_meteorSeen     = requests;
+		g_meteorsLeft    = RandRange(g_config.meteorsMin, g_config.meteorsMax);
+		g_meteorNext     = frame;
+		g_meteorAimed    = g_config.meteorHits != 0 && static_cast<int>(Rand() % 100) < g_config.meteorHitChance;
+		g_meteorAnywhere = forced;
+	}
+	const uint8_t bank   = GameBank(game);
+	const int     row    = bank <= 3 ? g_meteorRow[bank] : -1;
+	const int     hitRow = bank <= 3 ? g_meteorHitRow[bank] : -1;
+	const int     skill  = bank <= 3 ? g_meteorSkill[bank] : 0;
+	// one meteor after another, the configured gap apart (in game frames, 40 ms each; with no gap
+	// the whole volley falls in this frame)
+	while (g_meteorsLeft > 0 && static_cast<int32_t>(frame - g_meteorNext) >= 0) {
+		--g_meteorsLeft;
+		g_meteorNext = frame + static_cast<uint32_t>((RandRange(g_config.meteorGapMin, g_config.meteorGapMax) + 20) / 40);
+		if (row < 0) {
+			g_meteorsLeft = 0;
+			static int logs = 0;
+			if (++logs <= 3) {
+				Log("ash storm: no meteor missile row in bank %u (is the D2RMM mod's Ash storms option on, and installed?)", bank);
+			}
+			return;
+		}
+		const bool aimed = g_meteorAimed && hitRow >= 0;
+		g_meteorAimed    = false; // only the first of a volley
+		for (int i = 0; i < players.count; ++i) {
+			Room*     room  = Engine<UnitRoomFn>(kUnitRoom)(players.units[i]);
+			const int level = room != nullptr ? Engine<RoomLevelFn>(kRoomLevel)(room) : 0;
+			if (level <= 0 || IsTown(level) || (!g_meteorAnywhere && LevelFall(level) != kFallAsh)) {
+				continue;
+			}
+			if (aimed && g_burnCount < kMaxBurns) {
+				int32_t spot[2] = { 0, 0 };
+				StrikeNear(game, players.units[i], hitRow, skill, 0, 1, spot);
+				g_burns[g_burnCount++] = MeteorBurn { UnitId(players.units[i]), frame + kMeteorFallFrames, spot[0], spot[1] };
+			} else {
+				StrikeNear(game, players.units[i], row, skill, g_config.meteorMinDistance, g_config.meteorMaxDistance);
+			}
+			++g_totalMeteors;
+		}
+	}
+}
+
 // ---------------------------------------------------------------- target hooks
 // Mercenaries (and other good units) never pick a phantom; a phantom that picks a
 // mercenary or summon goes after that unit's owner instead.
@@ -1544,8 +1774,12 @@ void FrameHook(Game* game) {
 	}
 }
 
+// The missiles rows the mod marked for the plugin: Param4 = 7777 and Param5 = 4242 (the
+// lightning bolt), 4243 (the meteor), 4244 (the meteor with its marker).
 void FindLightningRow(const D2RL::PluginContext* context, uint32_t bank) {
 	g_lightningRow[bank] = -1;
+	g_meteorRow[bank]    = -1;
+	g_meteorHitRow[bank] = -1;
 	D2RL::DataTables::TableView view {};
 	view.structSize = D2RL::DataTables::TableViewSize;
 	if (g_tables->getTable(context, static_cast<D2RL::DataTables::Bank>(bank), D2RL::DataTables::TableId::Missiles, &view) != D2RL::DataTables::Result::Success
@@ -1558,23 +1792,32 @@ void FindLightningRow(const D2RL::PluginContext* context, uint32_t bank) {
 		int32_t param5 = 0;
 		memcpy(&param4, rows + static_cast<size_t>(row) * view.rowSize + 0x68, 4);
 		memcpy(&param5, rows + static_cast<size_t>(row) * view.rowSize + 0x6c, 4);
-		if (param4 == 7777 && param5 == 4242) {
-			g_lightningRow[bank] = static_cast<int>(row);
-			int16_t skill = -1;
-			if (view.rowSize >= 0x1b8) {
-				memcpy(&skill, rows + static_cast<size_t>(row) * view.rowSize + 0x1b6, 2);
-			}
+		if (param4 != 7777 || param5 < 4242 || param5 > 4244) {
+			continue;
+		}
+		int16_t skill = -1;
+		if (view.rowSize >= 0x1b8) {
+			memcpy(&skill, rows + static_cast<size_t>(row) * view.rowSize + 0x1b6, 2);
+		}
+		if (param5 == 4242 && g_lightningRow[bank] < 0) {
+			g_lightningRow[bank]   = static_cast<int>(row);
 			g_lightningSkill[bank] = skill > 0 ? skill : 57;
-			break;
+		} else if (param5 == 4243 && g_meteorRow[bank] < 0) {
+			g_meteorRow[bank]   = static_cast<int>(row);
+			g_meteorSkill[bank] = skill > 0 ? skill : 56;
+		} else if (param5 == 4244 && g_meteorHitRow[bank] < 0) {
+			g_meteorHitRow[bank] = static_cast<int>(row);
 		}
 	}
-	Log("storm: missiles bank %u has %u rows of 0x%x bytes, lightning row %d, skill %d", bank, view.rowCount, view.rowSize, g_lightningRow[bank], g_lightningSkill[bank]);
+	Log("storm: missiles bank %u has %u rows of 0x%x bytes, lightning row %d (skill %d), meteor rows %d and %d (skill %d)", bank, view.rowCount, view.rowSize, g_lightningRow[bank],
+		g_lightningSkill[bank], g_meteorRow[bank], g_meteorHitRow[bank], g_meteorSkill[bank]);
 }
 
 // Reads the text of levels.tsv, written by the D2RMM mod. The text is cut up while it is read.
-//   #mod <tab> alwaysNight=1 <tab> skyFlash=1 <tab> sandstorm=1      (the mod's own options)
+//   #mod <tab> alwaysNight=1 <tab> skyFlash=1 <tab> sandstorm=1 <tab> ashstorm=1   (the mod's own options)
 //   level <tab> monsters on Normal <tab> monsters on Nightmare/Hell  (monstats row numbers)
 //         [<tab> weather <tab> town <tab> under]                     (see LevelInfo; newer mods only)
+//         [<tab> ash]                                                (the Act 4 ash storm; newer still)
 // Returns the number of level lines.
 int ParseLevels(char* text) {
 	memset(g_levelMonsters, 0, sizeof(g_levelMonsters));
@@ -1582,6 +1825,7 @@ int ParseLevels(char* text) {
 	g_modKnown     = 0;
 	g_modSkyFlash  = 0;
 	g_modSandstorm = 0;
+	g_modAshstorm  = 0;
 	int   loaded   = 0;
 	bool  overflow = false;
 	char* line     = text;
@@ -1599,10 +1843,11 @@ int ParseLevels(char* text) {
 			g_modKnown     = 1;
 			g_modSkyFlash  = strstr(line, "skyFlash=1") != nullptr ? 1 : 0;
 			g_modSandstorm = strstr(line, "sandstorm=1") != nullptr ? 1 : 0;
+			g_modAshstorm  = strstr(line, "ashstorm=1") != nullptr ? 1 : 0;
 		} else if (*line >= '0' && *line <= '9') {
-			char* fields[6] = { line };
+			char* fields[7] = { line };
 			int   count     = 1;
-			for (char* c = line; *c != '\0' && count < 6; ++c) {
+			for (char* c = line; *c != '\0' && count < 7; ++c) {
 				if (*c == '\t') {
 					*c              = '\0';
 					fields[count++] = c + 1;
@@ -1635,6 +1880,16 @@ int ParseLevels(char* text) {
 					g_levelInfo[level].weather = static_cast<uint8_t>(Clamp(atoi(fields[3]), 0, 3));
 					g_levelInfo[level].town    = atoi(fields[4]) != 0 ? 1 : 0;
 					g_levelInfo[level].under   = static_cast<uint8_t>(Clamp(atoi(fields[5]), 0, 3));
+				}
+				// the ash storm has a column of its own (1 it blows here, 2 sheltered from it), so
+				// that the columns before it mean to an older plugin what they always did
+				if (count >= 7) {
+					const int ash = atoi(fields[6]);
+					if (ash == 1 && g_levelInfo[level].weather == kFallNone) {
+						g_levelInfo[level].weather = kFallAsh;
+					} else if (ash == 2 && g_levelInfo[level].weather == kFallNone && g_levelInfo[level].under == kFallNone) {
+						g_levelInfo[level].under = kFallAsh;
+					}
 				}
 			}
 			++loaded;
@@ -1690,9 +1945,10 @@ void LoadLevelMonsters() {
 	text[read] = '\0';
 
 	g_levelsLoaded = ParseLevels(text);
-	Log("levels: %d read (level 2 on Normal: %d monsters); weather and towns from %s; mod options %s%s%s", g_levelsLoaded, g_levelMonsters[0][2].count,
+	Log("levels: %d read (level 2 on Normal: %d monsters); weather and towns from %s; mod options %s%s%s%s", g_levelsLoaded, g_levelMonsters[0][2].count,
 		g_levelTableFromMod ? "the mod's table" : "the built-in vanilla lists (older mod)",
-		g_modKnown.load() != 0 ? "known" : "not given (older mod)", g_modSkyFlash.load() != 0 ? ", lightning sky" : "", g_modSandstorm.load() != 0 ? ", sandstorm" : "");
+		g_modKnown.load() != 0 ? "known" : "not given (older mod)", g_modSkyFlash.load() != 0 ? ", lightning sky" : "", g_modSandstorm.load() != 0 ? ", sandstorm" : "",
+		g_modAshstorm.load() != 0 ? ", ash storm" : "");
 }
 
 void __cdecl OnMonsterDeath(const D2RL::PluginContext*, const D2RL::Lifecycle::MonsterDeathEvent* event, void*) noexcept {
@@ -1865,7 +2121,9 @@ int               g_levelLogs = 0;
 // PlayClip only queues a request.
 constexpr int kThunderCount = 4;
 constexpr int kAmbientCount = 19; // 0-3 breath, 4-11 moan, 12-15 scream, 16-17 raven, 18 laugh
-constexpr int kWindCount    = 9;  // gusts of a few seconds each, for the sandstorm
+constexpr int kWindCount    = 9;  // gusts of a few seconds each, for the storms
+constexpr int kFireCount    = 2;  // the ash storm's fire: a low roar, crackling embers
+constexpr int kBurstCount   = 6;  // ...and its steam vents (0-2) and rockfalls (3-5)
 struct Clip {
 	const int16_t* samples = nullptr;
 	uint32_t       count   = 0;
@@ -1874,6 +2132,8 @@ struct Clip {
 Clip              g_thunder[kThunderCount];
 Clip              g_ambient[kAmbientCount];
 Clip              g_wind[kWindCount];
+Clip              g_fire[kFireCount];
+Clip              g_burst[kBurstCount];
 std::atomic<bool> g_soundsReady { false }; // set by the loader thread once every clip above is final
 HANDLE            g_soundLoader = nullptr;
 
@@ -1906,12 +2166,30 @@ Area StormArea(int level) {
 const char* const kAmbientNames[kAmbientCount] = { "breath1", "breath3", "breath6", "breath8", "moan1", "moan2", "moan3", "moan4", "moan5", "moan6",
 	"moan7", "moan8", "scream1", "scream3", "scream5", "scream7", "raven1", "raven3", nullptr /* Diablo's laugh */ };
 
-bool LoadGameClip(void* storage, const char* name, const SoundProcess& process, Clip* clip) {
-	uint32_t       count   = 0;
-	const int16_t* samples = LoadGameSound(storage, name, process, &count);
+// Fades a sound in over its first inMs and out over its last outMs: for a recording made to loop
+// (it starts and ends in mid-wave) that is played once.
+void FadeEnds(int16_t* samples, uint32_t count, uint32_t rate, uint32_t inMs, uint32_t outMs) {
+	uint32_t in  = static_cast<uint32_t>(static_cast<uint64_t>(rate) * inMs / 1000);
+	uint32_t out = static_cast<uint32_t>(static_cast<uint64_t>(rate) * outMs / 1000);
+	in           = in > count / 2 ? count / 2 : in;
+	out          = out > count / 2 ? count / 2 : out;
+	for (uint32_t i = 0; i < in; ++i) {
+		samples[i] = static_cast<int16_t>(static_cast<int64_t>(samples[i]) * i / in);
+	}
+	for (uint32_t i = 0; i < out; ++i) {
+		samples[count - 1 - i] = static_cast<int16_t>(static_cast<int64_t>(samples[count - 1 - i]) * i / out);
+	}
+}
+
+bool LoadGameClip(void* storage, const char* name, const SoundProcess& process, Clip* clip, uint32_t fadeInMs = 0, uint32_t fadeOutMs = 0) {
+	uint32_t count   = 0;
+	int16_t* samples = LoadGameSound(storage, name, process, &count);
 	if (samples == nullptr) {
 		Log("sounds: could not read %s from the game data", name);
 		return false;
+	}
+	if (fadeInMs != 0 || fadeOutMs != 0) {
+		FadeEnds(samples, count, process.outRate, fadeInMs, fadeOutMs);
 	}
 	clip->samples = samples; // kept for the life of the process
 	clip->count   = count;
@@ -1971,8 +2249,24 @@ int LoadSounds() {
 			snprintf(name, sizeof(name), "data:data\\global\\sfx\\ambient\\event\\wind%d.flac", i + 1);
 			loaded += LoadGameClip(storage, name, wind, &g_wind[i]) ? 1 : 0;
 		}
+		// the ash storm's fire: the roar is a loud recording and is brought down, the embers are a
+		// quiet one and are lifted; both at the mixer's own rate, for the crackle
+		const char* const  fireNames[kFireCount] = { "tristram_fire_rumble_hd", "bonfire_embers_loop_hd" };
+		const SoundProcess fire[kFireCount]      = { { 32000, 0.0f, 0.0f, -6.0f, 0.95f, 5.0f, 50.0f, 0.0f }, { 32000, 0.0f, 0.0f, 12.0f, 0.95f, 5.0f, 50.0f, 0.0f } };
+		for (int i = 0; i < kFireCount; ++i) {
+			snprintf(name, sizeof(name), "data:data\\hd\\global\\sfx\\ambient\\event\\%s.flac", fireNames[i]);
+			loaded += LoadGameClip(storage, name, fire[i], &g_fire[i]) ? 1 : 0;
+		}
+		const SoundProcess steam { 32000, 0.0f, 0.0f, 6.0f, 0.95f, 5.0f, 50.0f, 0.0f };
+		const SoundProcess rockfall { 32000, 0.0f, 0.0f, 3.0f, 0.95f, 5.0f, 50.0f, 0.0f };
+		for (int i = 0; i < kBurstCount; ++i) {
+			snprintf(name, sizeof(name), i < 3 ? "data:data\\hd\\global\\sfx\\ambient\\event\\event_hell_steam_%d_hd.flac" : "data:data\\hd\\global\\sfx\\ambient\\event\\frontend_act4_rockfall%d_hd.flac",
+				i % 3 + 1);
+			// the steam is a loop, played once here: it swells in and trails off
+			loaded += LoadGameClip(storage, name, i < 3 ? steam : rockfall, &g_burst[i], i < 3 ? 150 : 0, i < 3 ? 900 : 0) ? 1 : 0;
+		}
 		CloseGameStorage(storage);
-		Log("sounds: %d of %d read from the game data in %llu ms", loaded, kThunderCount + kAmbientCount + kWindCount,
+		Log("sounds: %d of %d read from the game data in %llu ms", loaded, kThunderCount + kAmbientCount + kWindCount + kFireCount + kBurstCount,
 			static_cast<unsigned long long>(GetTickCount64() - started));
 	}
 	return loaded;
@@ -1990,7 +2284,7 @@ constexpr uint32_t kMixBlock   = 1024; // 32 ms per buffer
 constexpr int      kMixBuffers = 3;
 constexpr int      kMaxVoices  = 12;
 constexpr uint32_t kIdleBlocks = kMixRate * 10 / kMixBlock; // close the device after 10 s of silence
-constexpr float    kWindStep   = 2.0f * kMixBlock / kMixRate; // most the wind's loudness moves in one buffer
+constexpr float    kBedStep    = 2.0f * kMixBlock / kMixRate; // most a bed's loudness moves in one buffer
 
 struct PlayRequest {
 	const Clip* clip;
@@ -2002,24 +2296,93 @@ int                g_requestCount = 0;
 HANDLE             g_mixEvent     = nullptr; // auto-reset: a request came in, or the device finished a buffer
 HANDLE             g_mixThread    = nullptr;
 std::atomic<bool>  g_mixStop { false };
-std::atomic<float> g_windGain { 0.0f }; // how loud the storm wants the wind right now; the mixer follows it
+
+// A bed is a sound that goes on for as long as a storm wants it: the wind, the ash storm's fire.
+// It is kept going as overlapping gusts of its clips, each faded in and out, and all of them as
+// loud as the storm wants the bed at that moment (the mixer follows the gain, a little a buffer).
+enum : int { kBedWind = 0, kBedFire = 1, kBeds = 2 };
+constexpr int8_t kNoBed = -1;
+struct Bed {
+	const Clip*        clips;
+	int                count;
+	int                nextMin; // the next gust starts when this share (percent) of the last has played...
+	int                nextMax; // ...at the latest this: the lower, the more of them overlap
+	std::atomic<float> gain;
+	std::atomic<int>   lowPass; // Hz: only what the bed has below this is heard, 0 = all of it
+};
+Bed g_beds[kBeds] = {
+	{ g_wind, kWindCount, 55, 80, 0.0f, 0 },
+	{ g_fire, kFireCount, 35, 55, 0.0f, 0 }, // two or three at a time, so roar and crackle are mostly both there
+};
+
+// What a bed sounds like below a frequency: a fourth-order low-pass (two second-order sections,
+// Butterworth), 24 dB an octave above the cutoff. The game's wind has nearly all its strength
+// below 300 Hz and a thin whistle above; cut at 100 to 150 Hz it is a deep roar and nothing else
+// (about 2 to 4 dB quieter, which the ash storm's wind volume makes up for).
+struct LowPass {
+	int   hz = 0; // what it is set for, 0 = off (everything passes)
+	float b0[2] {}, b1[2] {}, a1[2] {}, a2[2] {};
+	float z1[2] {}, z2[2] {};
+
+	void Set(int wanted) {
+		wanted = wanted <= 0 ? 0 : wanted < 30 ? 30 : wanted > static_cast<int>(kMixRate) / 4 ? static_cast<int>(kMixRate) / 4 : wanted;
+		if (wanted == hz) {
+			return;
+		}
+		if (hz == 0) {
+			Clear(); // it starts from silence
+		}
+		hz = wanted;
+		const float q[2] = { 0.54119610f, 1.30656296f };
+		const float w    = 2.0f * 3.14159265f * static_cast<float>(hz) / static_cast<float>(kMixRate);
+		for (int stage = 0; stage < 2 && hz != 0; ++stage) {
+			const float alpha = std::sin(w) / (2.0f * q[stage]);
+			const float a0    = 1.0f + alpha;
+			b0[stage]         = (1.0f - std::cos(w)) / 2.0f / a0;
+			b1[stage]         = (1.0f - std::cos(w)) / a0;
+			a1[stage]         = -2.0f * std::cos(w) / a0;
+			a2[stage]         = (1.0f - alpha) / a0;
+		}
+	}
+	void Clear() {
+		z1[0] = z1[1] = z2[0] = z2[1] = 0.0f;
+	}
+	void Run(float* samples, uint32_t count) {
+		if (hz == 0) {
+			return;
+		}
+		for (int stage = 0; stage < 2; ++stage) {
+			float s1 = z1[stage], s2 = z2[stage];
+			for (uint32_t i = 0; i < count; ++i) {
+				const float x = samples[i];
+				const float y = b0[stage] * x + s1;
+				s1            = b1[stage] * x - a1[stage] * y + s2;
+				s2            = b0[stage] * x - a2[stage] * y;
+				samples[i]    = y;
+			}
+			// a filter left with a vanishing remainder would crawl through denormal numbers
+			z1[stage] = std::fabs(s1) < 1e-20f ? 0.0f : s1;
+			z2[stage] = std::fabs(s2) < 1e-20f ? 0.0f : s2;
+		}
+	}
+};
 
 struct Voice {
 	const Clip* clip;
 	uint64_t    position; // in clip samples, 32.32 fixed point
 	uint64_t    step;
 	float       gain;
-	bool        wind; // a gust: faded at both ends, and as loud as the wind is at that moment
+	int8_t      bed; // kNoBed: a sound on its own. Otherwise a gust of that bed: faded at both ends, and as loud as the bed is at that moment
 };
 
-// Keeps the wind going as overlapping gusts: a new one starts before the last has died away.
+// Keeps a bed going as overlapping gusts: a new one starts before the last has died away.
 // untilNext counts output samples down to the next gust.
-void WindGusts(Voice* voices, int& voiceCount, bool wanted, bool audible, int32_t& untilNext) {
+void BedGusts(Voice* voices, int& voiceCount, int bed, bool wanted, bool audible, int32_t& untilNext) {
 	if (!wanted) {
 		untilNext = 0;
 		if (!audible) { // faded right out: gusts still running are dropped
 			for (int v = 0; v < voiceCount;) {
-				if (voices[v].wind) {
+				if (voices[v].bed == bed) {
 					voices[v] = voices[--voiceCount];
 				} else {
 					++v;
@@ -2032,33 +2395,44 @@ void WindGusts(Voice* voices, int& voiceCount, bool wanted, bool audible, int32_
 	if (untilNext > 0 || voiceCount >= kMaxVoices) {
 		return;
 	}
+	const Bed&  from = g_beds[bed];
 	const Clip* clip = nullptr;
-	for (int attempt = 0; attempt < kWindCount && clip == nullptr; ++attempt) {
-		const Clip& candidate = g_wind[g_mixRng.Next() % kWindCount];
+	for (int attempt = 0; attempt < from.count * 2 && clip == nullptr; ++attempt) {
+		const Clip& candidate = from.clips[g_mixRng.Next() % static_cast<uint32_t>(from.count)];
 		if (candidate.samples != nullptr && candidate.count > 0) {
 			clip = &candidate;
 		}
 	}
 	if (clip == nullptr) {
-		untilNext = static_cast<int32_t>(kMixRate); // no wind sound was read: look again in a second
+		untilNext = static_cast<int32_t>(kMixRate); // none of its sounds was read: look again in a second
 		return;
 	}
-	voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, 1.0f, true };
+	voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, 1.0f, static_cast<int8_t>(bed) };
 	const uint64_t length = static_cast<uint64_t>(clip->count) * kMixRate / clip->rate; // in output samples
-	untilNext             = static_cast<int32_t>(length * static_cast<uint64_t>(g_mixRng.Range(55, 80)) / 100);
+	untilNext             = static_cast<int32_t>(length * static_cast<uint64_t>(g_mixRng.Range(from.nextMin, from.nextMax)) / 100);
 }
 
-// One buffer of sound: every voice added up, finished voices dropped. windFrom and windTo are
-// the wind's loudness at the start and at the end of the buffer.
-void MixBlock(Voice* voices, int& voiceCount, float windFrom, float windTo, int16_t* out) {
+// One buffer of sound: every voice added up, finished voices dropped. bedFrom and bedTo are
+// each bed's loudness at the start and at the end of the buffer; tone (when given) is each bed's
+// low-pass: a bed's gusts are added up on their own and go through it before they join the rest.
+void MixBlock(Voice* voices, int& voiceCount, const float* bedFrom, const float* bedTo, int16_t* out, LowPass* tone = nullptr) {
 	float mix[kMixBlock] = {};
+	float bedMix[kBeds][kMixBlock];
+	bool  bedUsed[kBeds] {};
 	for (int v = 0; v < voiceCount;) {
 		Voice&         voice   = voices[v];
 		const int16_t* samples = voice.clip->samples;
 		const uint32_t count   = voice.clip->count;
 		uint32_t       i       = 0;
-		if (voice.wind) {
-			uint32_t fade = voice.clip->rate * 2 / 5; // 0.4 s in and out
+		if (voice.bed != kNoBed) {
+			float* const into = bedMix[voice.bed];
+			if (!bedUsed[voice.bed]) {
+				bedUsed[voice.bed] = true;
+				memset(into, 0, sizeof(bedMix[0]));
+			}
+			const float windFrom = bedFrom[voice.bed];
+			const float windTo   = bedTo[voice.bed];
+			uint32_t    fade = voice.clip->rate * 2 / 5; // 0.4 s in and out
 			if (fade > count / 3) {
 				fade = count / 3;
 			}
@@ -2078,7 +2452,7 @@ void MixBlock(Voice* voices, int& voiceCount, float windFrom, float windTo, int1
 				const float next     = at + 1 < count ? samples[at + 1] : a;
 				const float envelope = at < fade ? static_cast<float>(at) * perFade : count - at < fade ? static_cast<float>(count - at) * perFade : 1.0f;
 				const float value = (a + (next - a) * frac) * envelope * (windFrom + windStep * static_cast<float>(i)) * (1.0f / 32768.0f);
-				mix[i] += soft ? std::tanh(value) : value;
+				into[i] += soft ? std::tanh(value) : value;
 				voice.position += voice.step;
 			}
 		} else {
@@ -2103,6 +2477,20 @@ void MixBlock(Voice* voices, int& voiceCount, float windFrom, float windTo, int1
 			++v;
 		}
 	}
+	for (int bed = 0; bed < kBeds; ++bed) {
+		if (!bedUsed[bed]) {
+			if (tone != nullptr) {
+				tone[bed].Clear(); // nothing of it playing: the next gust starts clean
+			}
+			continue;
+		}
+		if (tone != nullptr) {
+			tone[bed].Run(bedMix[bed], kMixBlock);
+		}
+		for (uint32_t i = 0; i < kMixBlock; ++i) {
+			mix[i] += bedMix[bed][i];
+		}
+	}
 	for (uint32_t i = 0; i < kMixBlock; ++i) {
 		const float value = mix[i] > 1.0f ? 1.0f : mix[i] < -1.0f ? -1.0f : mix[i];
 		out[i]            = static_cast<int16_t>(value * 32767.0f);
@@ -2118,8 +2506,17 @@ DWORD WINAPI MixerThread(void*) {
 	int            voiceCount   = 0;
 	uint32_t       idle         = 0;
 	bool           failedLogged = false;
-	float          windNow      = 0.0f; // the wind's loudness at the end of the last buffer
-	int32_t        untilGust    = 0;
+	float          bedNow[kBeds] {};    // each bed's loudness at the end of the last buffer
+	int32_t        untilGust[kBeds] {};
+	LowPass        tone[kBeds];
+	const auto     bedWanted    = [] {
+		for (const Bed& bed : g_beds) {
+			if (bed.gain.load(std::memory_order_relaxed) > 0.001f) {
+				return true;
+			}
+		}
+		return false;
+	};
 
 	while (!g_mixStop.load(std::memory_order_relaxed)) {
 		WaitForSingleObject(g_mixEvent, INFINITE);
@@ -2129,13 +2526,13 @@ DWORD WINAPI MixerThread(void*) {
 		AcquireSRWLockExclusive(&g_playLock);
 		for (int i = 0; i < g_requestCount && voiceCount < kMaxVoices; ++i) {
 			const Clip* clip = g_requests[i].clip;
-			voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, g_requests[i].gain, false };
+			voices[voiceCount++] = Voice { clip, 0, (static_cast<uint64_t>(clip->rate) << 32) / kMixRate, g_requests[i].gain, kNoBed };
 		}
 		g_requestCount = 0;
 		ReleaseSRWLockExclusive(&g_playLock);
 
 		if (device == nullptr) {
-			if (voiceCount == 0 && g_windGain.load(std::memory_order_relaxed) <= 0.001f) {
+			if (voiceCount == 0 && !bedWanted()) {
 				continue;
 			}
 			WAVEFORMATEX format {};
@@ -2161,9 +2558,11 @@ DWORD WINAPI MixerThread(void*) {
 				waveOutPrepareHeader(device, &headers[b], sizeof(WAVEHDR));
 				headers[b].dwFlags |= WHDR_DONE; // free to fill
 			}
-			idle      = 0;
-			windNow   = 0.0f;
-			untilGust = 0;
+			idle = 0;
+			for (int bed = 0; bed < kBeds; ++bed) {
+				bedNow[bed]    = 0.0f;
+				untilGust[bed] = 0;
+			}
 		}
 
 		// refill every buffer the device has finished with
@@ -2171,13 +2570,17 @@ DWORD WINAPI MixerThread(void*) {
 			if ((headers[b].dwFlags & WHDR_DONE) == 0) {
 				continue;
 			}
-			const float windTarget = g_windGain.load(std::memory_order_relaxed);
-			const float windMove   = windTarget - windNow;
-			const float windTo     = windNow + (windMove > kWindStep ? kWindStep : windMove < -kWindStep ? -kWindStep : windMove);
-			WindGusts(voices, voiceCount, windTarget > 0.001f, windTo > 0.001f, untilGust);
-			MixBlock(voices, voiceCount, windNow, windTo, buffers[b]);
-			windNow = windTo;
-			idle    = voiceCount > 0 ? 0 : idle + 1;
+			float bedTo[kBeds];
+			for (int bed = 0; bed < kBeds; ++bed) {
+				const float target = g_beds[bed].gain.load(std::memory_order_relaxed);
+				const float move   = target - bedNow[bed];
+				bedTo[bed]         = bedNow[bed] + (move > kBedStep ? kBedStep : move < -kBedStep ? -kBedStep : move);
+				BedGusts(voices, voiceCount, bed, target > 0.001f, bedTo[bed] > 0.001f, untilGust[bed]);
+				tone[bed].Set(g_beds[bed].lowPass.load(std::memory_order_relaxed));
+			}
+			MixBlock(voices, voiceCount, bedNow, bedTo, buffers[b], tone);
+			memcpy(bedNow, bedTo, sizeof(bedNow));
+			idle = voiceCount > 0 ? 0 : idle + 1;
 			headers[b].dwFlags &= ~static_cast<DWORD>(WHDR_DONE);
 			waveOutWrite(device, &headers[b], sizeof(WAVEHDR));
 		}
@@ -2210,7 +2613,9 @@ void StartMixer() {
 }
 
 void StopMixer() {
-	g_windGain = 0.0f;
+	for (Bed& bed : g_beds) {
+		bed.gain = 0.0f;
+	}
 	if (g_mixThread != nullptr) {
 		g_mixStop = true;
 		SetEvent(g_mixEvent);
@@ -2237,19 +2642,19 @@ void PlayThunder(float gain) {
 	PlayClip(g_thunder[ClientRand() % kThunderCount], gain * static_cast<float>(g_config.volume) / 100.0f);
 }
 
-// Called from the game's threads: how loud the wind should be from now on (0 = none). The
-// mixer is only woken when the wind starts; after that the audio device keeps it running.
-void SetWind(float gain) {
+// Called from the game's threads: how loud a bed should be from now on (0 = none). The mixer
+// is only woken when a bed starts; after that the audio device keeps it running.
+void SetBed(int bed, float gain) {
 	if (g_mixThread == nullptr || !g_soundsReady.load(std::memory_order_acquire) || gain < 0.001f) {
 		gain = 0.0f;
 	}
-	static float sent = 0.0f; // this runs every frame, and most frames the wind has not changed
-	if (gain == sent) {
+	static float sent[kBeds] {}; // this runs every frame, and most frames nothing has changed
+	if (gain == sent[bed]) {
 		return;
 	}
-	const bool start = gain > 0.0f && sent <= 0.0f;
-	sent             = gain;
-	g_windGain.store(gain, std::memory_order_relaxed);
+	const bool start = gain > 0.0f && sent[bed] <= 0.0f;
+	sent[bed]        = gain;
+	g_beds[bed].gain.store(gain, std::memory_order_relaxed);
 	if (start) {
 		SetEvent(g_mixEvent);
 	}
@@ -2410,7 +2815,9 @@ void UpdateSky(uint64_t now, bool inGame, float sand) {
 	const bool known   = g_modKnown.load(std::memory_order_relaxed) != 0;
 	const bool flashOn = g_config.skyFlash != 0 && (!known || g_modSkyFlash.load(std::memory_order_relaxed) != 0);
 	const bool hold    = inGame
-		&& (known ? g_modSkyFlash.load(std::memory_order_relaxed) != 0 || g_modSandstorm.load(std::memory_order_relaxed) != 0 : g_config.skyFlash != 0);
+		&& (known ? g_modSkyFlash.load(std::memory_order_relaxed) != 0 || g_modSandstorm.load(std::memory_order_relaxed) != 0
+					|| g_modAshstorm.load(std::memory_order_relaxed) != 0
+				  : g_config.skyFlash != 0);
 	if (!hold) {
 		if (g_skyHolding) {
 			SkyWrite(5, 0.0f, 0); // give the clock back to the game
@@ -2450,22 +2857,46 @@ bool SafeRead(uintptr_t address, T* out) {
 	return SafeReadBytes(address, out, sizeof(T));
 }
 
-// ---- sandstorm --------------------------------------------------------------------
-// The mod turns the unused "day" lighting of the Act 2 desert into the storm look (dense sand-
-// coloured fog, hard wind). A storm is that look faded in and out through the time-of-day blend
-// the lightning uses, with the game's snow effect as blowing dust and gusts of wind on top.
-// Storms come and go on their own clock, whether or not the player is out in one.
-bool              g_sandActive = false; // a storm is blowing
-uint64_t          g_sandChange = 0;     // tick count of the next start or end, 0 = not scheduled
-uint64_t          g_sandLast   = 0;     // tick count of the previous update
-float             g_sandLevel  = 0.0f;  // 0-1: how much of the storm the scene shows now
-float             g_windLevel  = 0.0f;  // 0-1: how much of the wind is heard now
-int               g_sandLogs   = 0;
-std::atomic<bool> g_forceSand { false };
-std::atomic<int>  g_sandShown { 0 }; // percent, for "horror status"
+// ---- storms ------------------------------------------------------------------------
+// A storm is weather the plugin makes itself. The mod turns the unused "day" lighting of some
+// areas into the storm's look (for the Act 2 desert: dense sand-coloured fog, hard wind), and a
+// storm is that look faded in and out through the time-of-day blend the lightning uses, with a
+// field of the game's own effects blowing past and gusts of wind on top. Each kind of storm
+// comes and goes on its own clock, whether or not the player is out in one.
+struct StormState {
+	bool              active = false; // a storm is blowing
+	uint64_t          change = 0;     // tick count of the next start or end, 0 = not scheduled
+	float             level  = 0.0f;  // 0-1: how much of the storm the scene shows now
+	float             wind   = 0.0f;  // 0-1: how much of its wind is heard now
+	int               logs   = 0;
+	std::atomic<bool> force { false }; // started or stopped from the console
+	std::atomic<int>  shown { 0 };     // percent, for "horror status"
+};
 
-bool SandAllowed() {
-	return g_skyReady && g_config.sandEnabled != 0 && g_modSandstorm.load(std::memory_order_relaxed) != 0;
+struct StormKind {
+	const char*        name;        // in the log
+	uint8_t            fall;        // what "falls" in its levels (LevelInfo)
+	const StormEffect* effects;     // what its field can be made of; [0] is "none"
+	int                effectCount;
+	int                layers;      // how many effects its field can have at once (its layer settings)
+	StormConfig*       config;
+	std::atomic<int>*  installed;   // the mod installed its look
+	bool*              failed;      // per effect: the game would not create it, not tried again
+	const int*         fireVolume;  // its fire's volume setting; nullptr: this storm has no fire
+	StormState         state;
+};
+
+enum : int { kStormSand = 0, kStormAsh = 1, kStormKinds = 2 };
+StormKind g_storms[kStormKinds] = {
+	{ "sandstorm", kFallSand, kSandEffects, kSandEffectCount, 3, &g_config.sand, &g_modSandstorm, g_sandFailed, nullptr, {} },
+	{ "ash storm", kFallAsh, kAshEffects, kAshEffectCount, kMaxLayers, &g_config.ash, &g_modAshstorm, g_ashFailed, &g_config.fireVolume, {} },
+};
+uint64_t g_stormLast = 0; // tick count of the previous update
+
+StormState& Sand() { return g_storms[kStormSand].state; }
+
+bool StormAllowed(const StormKind& kind) {
+	return g_skyReady && kind.config->enabled != 0 && kind.installed->load(std::memory_order_relaxed) != 0;
 }
 
 void Approach(float& value, float target, float step) {
@@ -2476,87 +2907,160 @@ void Approach(float& value, float target, float step) {
 	}
 }
 
-void UpdateSandstorm(uint64_t now, int level) {
-	const bool allowed = level > 0 && SandAllowed();
-	const bool toggle  = g_forceSand.load(std::memory_order_relaxed) && g_forceSand.exchange(false);
-	float      seconds = g_sandLast != 0 && now > g_sandLast ? static_cast<float>(now - g_sandLast) / 1000.0f : 0.0f;
+void UpdateStorms(uint64_t now, int level) {
+	float seconds = g_stormLast != 0 && now > g_stormLast ? static_cast<float>(now - g_stormLast) / 1000.0f : 0.0f;
 	if (seconds > 0.25f) {
 		seconds = 0.25f; // a long hitch does not jump the fade
 	}
-	g_sandLast = now;
+	g_stormLast = now;
 
-	if (!allowed) {
-		g_sandActive = false;
-		g_sandChange = 0;
-		g_sandLevel  = 0.0f;
-		g_windLevel  = 0.0f;
-		g_sandShown  = 0;
-		SetWind(0.0f);
+	float bedGain[kBeds] {};
+	int   windLowPass = -1; // of the storm whose wind is heard, -1 = no wind: left as it is while the last of it fades
+	for (StormKind& kind : g_storms) {
+		StormState&        state   = kind.state;
+		const StormConfig& config  = *kind.config;
+		const bool         allowed = level > 0 && StormAllowed(kind);
+		const bool         toggle  = state.force.load(std::memory_order_relaxed) && state.force.exchange(false);
+		if (!allowed) {
+			state.active = false;
+			state.change = 0;
+			state.level  = 0.0f;
+			state.wind   = 0.0f;
+			state.shown  = 0;
+			continue;
+		}
+
+		const auto calm   = [&] { return static_cast<uint64_t>(ClientRange(config.calmMin, config.calmMax)) * 1000; };
+		const auto length = [&] { return static_cast<uint64_t>(ClientRange(config.lengthMin, config.lengthMax)) * 1000; };
+		if (toggle) {
+			state.active = !state.active;
+			state.change = now + (state.active ? length() : calm());
+			Log("%s: %s from the console (level %d)", kind.name, state.active ? "started" : "stopped", level);
+		} else if (config.always != 0) {
+			state.active = true;
+			state.change = 0;
+		} else if (state.change == 0) {
+			state.active = false;
+			state.change = now + calm();
+		} else if (now >= state.change) {
+			state.active = !state.active;
+			state.change = now + (state.active ? length() : calm());
+			if (++state.logs <= 6) {
+				Log("%s: %s (level %d), next change in %llu s", kind.name, state.active ? "rolling in" : "dying down", level,
+					static_cast<unsigned long long>((state.change - now) / 1000));
+			}
+		}
+
+		const bool  inStorm   = LevelFall(level) == kind.fall;
+		const bool  sheltered = !inStorm && LevelUnder(level) == kind.fall;
+		const float step      = seconds / static_cast<float>(config.fade);
+		if (inStorm) {
+			Approach(state.level, state.active ? 1.0f : 0.0f, step);
+		} else if (sheltered && IsTown(level)) {
+			Approach(state.level, 0.0f, step); // its town (Lut Gholein has the desert's lighting): the storm thins out, it is not cut off
+		} else {
+			state.level = 0.0f; // any other area's "day" lighting is not this storm
+		}
+		const float wind = !state.active ? 0.0f : inStorm ? 1.0f : sheltered && config.indoorWind != 0 ? 0.3f : 0.0f;
+		Approach(state.wind, wind, step);
+		// what is heard of it: the wind, and under the ash storm the fire, muffled together
+		const float gain   = state.wind * static_cast<float>(config.windVolume) / 100.0f;
+		const float fire   = kind.fireVolume != nullptr ? state.wind * static_cast<float>(*kind.fireVolume) / 100.0f : 0.0f;
+		if (gain > bedGain[kBedWind]) {
+			bedGain[kBedWind] = gain;
+			windLowPass       = config.windLowPass;
+		}
+		bedGain[kBedFire]  = fire > bedGain[kBedFire] ? fire : bedGain[kBedFire];
+		state.shown        = static_cast<int>(state.level * 100.0f + 0.5f);
+	}
+	for (int bed = 0; bed < kBeds; ++bed) {
+		SetBed(bed, bedGain[bed]);
+	}
+	if (windLowPass >= 0 && windLowPass != g_beds[kBedWind].lowPass.load(std::memory_order_relaxed)) {
+		g_beds[kBedWind].lowPass.store(windLowPass, std::memory_order_relaxed);
+	}
+}
+
+// The ash storm's steam and rockfalls: one of them every so often while the player is out in a
+// storm that shows at half strength or more.
+uint64_t         g_burstNext = 0; // tick count of the next one, 0 = not scheduled
+std::atomic<int> g_totalBursts { 0 };
+
+void UpdateBursts(uint64_t now, int level) {
+	const bool on = g_config.burstVolume > 0 && level > 0 && LevelFall(level) == kFallAsh && g_storms[kStormAsh].state.level >= 0.5f;
+	if (!on) {
+		g_burstNext = 0;
 		return;
 	}
+	if (g_burstNext != 0 && now < g_burstNext) {
+		return;
+	}
+	const bool due = g_burstNext != 0;
+	g_burstNext    = now + static_cast<uint64_t>(ClientRange(g_config.burstMinInterval, g_config.burstMaxInterval)) * 1000;
+	if (due) {
+		++g_totalBursts;
+		PlayClip(g_burst[ClientRand() % kBurstCount], static_cast<float>(g_config.burstVolume) / 100.0f * static_cast<float>(ClientRange(50, 100)) / 100.0f);
+	}
+}
 
-	const auto calm   = [] { return static_cast<uint64_t>(ClientRange(g_config.sandCalmMin, g_config.sandCalmMax)) * 1000; };
-	const auto length = [] { return static_cast<uint64_t>(ClientRange(g_config.sandLengthMin, g_config.sandLengthMax)) * 1000; };
-	if (toggle) {
-		g_sandActive = !g_sandActive;
-		g_sandChange = now + (g_sandActive ? length() : calm());
-		Log("sandstorm: %s from the console (level %d)", g_sandActive ? "started" : "stopped", level);
-	} else if (g_config.sandAlways != 0) {
-		g_sandActive = true;
-		g_sandChange = 0;
-	} else if (g_sandChange == 0) {
-		g_sandActive = false;
-		g_sandChange = now + calm();
-	} else if (now >= g_sandChange) {
-		g_sandActive = !g_sandActive;
-		g_sandChange = now + (g_sandActive ? length() : calm());
-		if (++g_sandLogs <= 6) {
-			Log("sandstorm: %s (level %d), next change in %llu s", g_sandActive ? "rolling in" : "dying down", level,
-				static_cast<unsigned long long>((g_sandChange - now) / 1000));
+// How much of a storm look the scene shows, 0-1 (one kind's at most: each has its own areas).
+float StormBlend() {
+	float blend = 0.0f;
+	for (const StormKind& kind : g_storms) {
+		const float own = kind.state.level * static_cast<float>(kind.config->strength) / 100.0f;
+		blend           = own > blend ? own : blend;
+	}
+	return blend;
+}
+
+// The blowing field for the weather driver: which kind of storm this level is out in (*which,
+// nullptr = none) and how many of its configured effects should be up right now. -1 = this is
+// not a place for a field (or it is switched off). The effects come in one after another as the
+// storm builds and go the same way: the first early, the last near its height.
+int StormLayers(int level, StormKind** which) {
+	*which = nullptr;
+	if (level <= 0) {
+		return -1;
+	}
+	for (StormKind& kind : g_storms) {
+		const StormConfig& config = *kind.config;
+		if (LevelFall(level) != kind.fall || !StormAllowed(kind) || config.dust <= 0) {
+			continue;
 		}
+		int configured = 0;
+		for (const int effect : config.layer) {
+			configured += effect > 0 && effect < kind.effectCount ? 1 : 0;
+		}
+		if (configured == 0) {
+			return -1;
+		}
+		int up = 0;
+		for (int i = 0; i < configured; ++i) {
+			const float threshold = 0.1f + (configured > 1 ? 0.6f * static_cast<float>(i) / static_cast<float>(configured - 1) : 0.0f);
+			up += kind.state.level >= threshold ? 1 : 0;
+		}
+		*which = &kind;
+		return up;
 	}
-
-	const bool  inSand    = LevelFall(level) == kFallSand;
-	const bool  sheltered = !inSand && LevelUnder(level) == kFallSand;
-	const float step      = seconds / static_cast<float>(g_config.sandFade);
-	if (inSand) {
-		Approach(g_sandLevel, g_sandActive ? 1.0f : 0.0f, step);
-	} else if (sheltered && IsTown(level)) {
-		Approach(g_sandLevel, 0.0f, step); // Lut Gholein has the desert's lighting: the storm thins out, it is not cut off
-	} else {
-		g_sandLevel = 0.0f; // any other area's "day" lighting is not a storm
-	}
-	const float wind = !g_sandActive ? 0.0f : inSand ? 1.0f : sheltered && g_config.sandIndoorWind != 0 ? 0.3f : 0.0f;
-	Approach(g_windLevel, wind, step);
-	SetWind(g_windLevel * static_cast<float>(g_config.sandWindVolume) / 100.0f);
-	g_sandShown = static_cast<int>(g_sandLevel * 100.0f + 0.5f);
+	return -1;
 }
 
-// How much of the storm look the scene shows, 0-1.
-float SandBlend() {
-	return g_sandLevel * static_cast<float>(g_config.sandStrength) / 100.0f;
-}
+// The ash storm's meteors, client side: while the storm shows at half strength or more in an ash
+// level, a volley is asked for every so often (the server drops it, see WorldMeteors).
+uint64_t g_nextMeteor = 0; // tick count of the next volley, 0 = not scheduled
 
-// The blowing sand for the weather driver: how many of the configured effects should be up
-// right now. -1 = this is not a place for them (or they are switched off). They come in one
-// after another as the storm builds and go the same way: the first early, the last near its height.
-int SandLayers(int level) {
-	if (level <= 0 || !SandAllowed() || g_config.sandDust <= 0 || LevelFall(level) != kFallSand) {
-		return -1;
+void UpdateMeteors(uint64_t now, int level) {
+	const bool falling = g_config.meteors != 0 && level > 0 && LevelFall(level) == kFallAsh && g_storms[kStormAsh].state.level >= 0.5f;
+	if (!falling) {
+		g_nextMeteor = 0;
+		return;
 	}
-	int configured = 0;
-	for (const int effect : { g_config.sandLayer1, g_config.sandLayer2, g_config.sandLayer3 }) {
-		configured += effect > 0 && effect < kSandEffectCount ? 1 : 0;
+	if (g_nextMeteor == 0) {
+		g_nextMeteor = now + static_cast<uint64_t>(ClientRange(g_config.meteorMinInterval, g_config.meteorMaxInterval)) * 1000;
+	} else if (now >= g_nextMeteor) {
+		g_nextMeteor = now + static_cast<uint64_t>(ClientRange(g_config.meteorMinInterval, g_config.meteorMaxInterval)) * 1000;
+		++g_meteorRequests;
 	}
-	if (configured == 0) {
-		return -1;
-	}
-	int up = 0;
-	for (int i = 0; i < configured; ++i) {
-		const float threshold = 0.1f + (configured > 1 ? 0.6f * static_cast<float>(i) / static_cast<float>(configured - 1) : 0.0f);
-		up += g_sandLevel >= threshold ? 1 : 0;
-	}
-	return up;
 }
 
 // ---- real weather ----------------------------------------------------------------
@@ -2631,7 +3135,8 @@ uintptr_t FindWeather() {
 }
 
 uintptr_t g_weatherObject    = 0;  // found once, then only checked
-int       g_weatherKind      = -1; // what is playing: 0 rain, 1 snow, 100 + sand effect for a storm's marker
+constexpr int kMarkerKind    = 100; // a storm marker's g_weatherKind: 100 + 100 * the storm's number + its effect
+int       g_weatherKind      = -1; // what is playing: 0 rain, 1 snow, or a storm's marker (see kMarkerKind)
 int       g_weatherSetType   = -2; // what the last update call asked for...
 int       g_weatherSetLevel  = -2; // ...in which level...
 int       g_weatherSetAmount = -1; // ...at which intensity
@@ -2777,19 +3282,23 @@ struct Patch {
 	std::atomic<int>      state { kPatchFree };
 	std::atomic<bool>     cancel { false }; // queued, but no longer wanted: its job creates nothing
 	std::atomic<uint32_t> handle { kNoHandle };
-	int                   effect = 0;
-	int                   layer  = 0; // which of the three settings it belongs to
+	const StormKind*      kind   = nullptr; // the storm whose field it belongs to
+	int                   effect = 0;       // number in that storm's effect list
+	int                   layer  = 0;       // which of the three settings it belongs to
 	int                   column = 0; // grid cell
 	int                   row    = 0;
 	float                 position[3] {};
 };
 Patch    g_patches[kMaxPatches];
-bool     g_effectFailed[kSandEffectCount]; // the game would not create it: not tried again
 int      g_patchLogs  = 0;
 float    g_patchBudget = 0.0f; // patches that may be created now (builds up at the configured rate)
 uint64_t g_patchClock  = 0;    // when the budget was last topped up
 uint64_t g_patchAliveNext = 0; // when every patch is next checked against the game's entity table
 int      g_patchFreeHint  = 0; // where the search for a free slot starts
+// Each removal is a call into the game that destroys an effect. A whole field going at once
+// (leaving the area, a layer dropping as a storm dies down) is hundreds of them, so they are
+// spread over passes a tenth of a second apart, as creations are.
+constexpr int kMaxStopsAPass = 64;
 // how the player is moving: where they were at the last look, their speed (world units a
 // second, smoothed), and how far the field leans ahead of them for it
 float    g_fieldSeenAt[2] {};
@@ -2829,7 +3338,7 @@ void __cdecl JobInvoke(void* self, void*, void*) {
 	alignas(16) float matrix[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, patch.position[0], patch.position[1], patch.position[2], 1 };
 	void*          renderer      = reinterpret_cast<RendererFn>(g_base + kRenderer)();
 	const uint32_t handle        = renderer != nullptr
-		? reinterpret_cast<SpawnEffectFn>(g_base + kSpawnEffect)(renderer, kSandEffects[patch.effect].path, matrix, kNoHandle, nullptr, 0)
+		? reinterpret_cast<SpawnEffectFn>(g_base + kSpawnEffect)(renderer, patch.kind->effects[patch.effect].path, matrix, kNoHandle, nullptr, 0)
 		: kNoHandle;
 	patch.handle = handle;
 	patch.state  = handle != kNoHandle ? kPatchUp : kPatchFailed;
@@ -2867,23 +3376,22 @@ void ForgetWeather() {
 	g_snowSwapped    = false;
 }
 
-// The effect each of the three settings wants up right now, 0 = none: the first sandLayers of
-// the configured ones. The same effect in two settings is two fields of it, one over the
-// other: a thicker storm. Returns how many are wanted.
-int WantedEffects(int sandLayers, int* wanted) {
+// The effect each of the storm's three settings wants up right now, 0 = none: the first
+// "layers" of the configured ones. The same effect in two settings is two fields of it, one over
+// the other: a thicker storm. Returns how many are wanted. storm: nullptr = no storm here.
+int WantedEffects(const StormKind* storm, int layers, int* wanted) {
 	int count = 0;
 	for (int layer = 0; layer < kMaxLayers; ++layer) {
 		wanted[layer] = 0;
 	}
-	if (sandLayers > 0 && g_fieldReady) {
-		const int chosen[kMaxLayers] = { g_config.sandLayer1, g_config.sandLayer2, g_config.sandLayer3 };
-		int       configured         = 0;
+	if (storm != nullptr && layers > 0 && g_fieldReady) {
+		int configured = 0;
 		for (int layer = 0; layer < kMaxLayers; ++layer) {
-			const int effect = chosen[layer];
-			if (effect <= 0 || effect >= kSandEffectCount) {
+			const int effect = storm->config->layer[layer];
+			if (effect <= 0 || effect >= storm->effectCount) {
 				continue;
 			}
-			if (configured++ < sandLayers && !g_effectFailed[effect]) {
+			if (configured++ < layers && !storm->failed[effect]) {
 				wanted[layer] = effect;
 				++count;
 			}
@@ -2903,19 +3411,23 @@ float PatchJitter(int column, int row, int layer, int axis) {
 	return (static_cast<float>(h & 0xffff) / 65535.0f - 0.5f) * 0.5f;
 }
 
-// Brings the field in line with what is wanted. sandLayers: how many of the configured
-// effects should be up (0 or less: none). Returns true while there is still work to do.
-bool UpdateField(uint64_t now, int sandLayers) {
+// Brings the field in line with what is wanted. storm: the kind of storm the player is out in
+// (nullptr: none); layers: how many of its configured effects should be up (0 or less: none).
+// Returns true while there is still work to do.
+bool UpdateField(uint64_t now, const StormKind* storm, int layers) {
+	// the field's own settings are the storm's (with no storm here nothing is laid out, and what
+	// is left of another storm's field is only removed)
+	const StormConfig& config = storm != nullptr ? *storm->config : *g_storms[kStormSand].config;
 	// how many patches may be created this time: the configured number a second, saved up for
 	// at most a quarter of a second (at least one), so a field never appears in one burst
 	// unless the rate asks for that
-	const float rate   = static_cast<float>(g_config.sandFieldRate);
+	const float rate   = static_cast<float>(config.fieldRate);
 	const float saved  = rate / 4.0f > 1.0f ? rate / 4.0f : 1.0f;
 	const float passed = g_patchClock != 0 && now > g_patchClock ? static_cast<float>(now - g_patchClock) / 1000.0f : 1.0f;
 	g_patchClock       = now;
 	g_patchBudget      = g_patchBudget + rate * passed < saved ? g_patchBudget + rate * passed : saved;
 	int       wanted[kMaxLayers];
-	const int wantedCount = WantedEffects(sandLayers, wanted);
+	const int wantedCount = WantedEffects(storm, layers, wanted);
 
 	// nothing up, nothing queued and nothing wanted: the usual pass outside a storm
 	if (wantedCount == 0 && g_patchesUp.load(std::memory_order_relaxed) == 0) {
@@ -2933,10 +3445,10 @@ bool UpdateField(uint64_t now, int sandLayers) {
 	const WorldView world = ReadWorld();
 	float      centre[3]  = {};
 	const bool settled    = WeatherField<uint8_t>(0x60) == 0;
-	const bool haveCentre = wantedCount > 0 && g_weatherOn && g_weatherKind >= 100 && settled && HandleAlive(world, WeatherField<uint32_t>(0x64))
+	const bool haveCentre = wantedCount > 0 && g_weatherOn && g_weatherKind >= kMarkerKind && settled && HandleAlive(world, WeatherField<uint32_t>(0x64))
 		&& EntityPosition(world, WeatherField<uint32_t>(0x64), centre);
-	const float spacing   = static_cast<float>(g_config.sandFieldSpacing) * 2.0f; // world units
-	const int   radius    = g_config.sandFieldRadius;
+	const float spacing   = static_cast<float>(config.fieldSpacing) * 2.0f; // world units
+	const int   radius    = config.fieldRadius;
 
 	// The field leans ahead of a moving player: a new patch needs a moment to fill with sand,
 	// so it is created further off in the direction of travel, about two seconds' worth but
@@ -2945,7 +3457,7 @@ bool UpdateField(uint64_t now, int sandLayers) {
 	// does not tear the field down behind and build it up again in front each time.
 	if (haveCentre) {
 		const float seconds = g_fieldSeenClock != 0 && now > g_fieldSeenClock ? static_cast<float>(now - g_fieldSeenClock) / 1000.0f : 0.0f;
-		const float most    = static_cast<float>(g_config.sandFieldLead) / 100.0f * static_cast<float>(radius) * spacing;
+		const float most    = static_cast<float>(config.fieldLead) / 100.0f * static_cast<float>(radius) * spacing;
 		const float moved[2] = { centre[0] - g_fieldSeenAt[0], centre[2] - g_fieldSeenAt[1] };
 		const bool  travel  = seconds > 0.02f && seconds < 3.0f && std::fabs(moved[0]) < 400.0f && std::fabs(moved[1]) < 400.0f; // a jump (waypoint, portal) is not travel
 		if (travel) {
@@ -2985,8 +3497,9 @@ bool UpdateField(uint64_t now, int sandLayers) {
 		g_patchAliveNext = now + 1000;
 	}
 
-	bool busy = false;
-	int  up   = 0;
+	bool busy  = false;
+	int  up    = 0;
+	int  stops = 0;
 	bool present[kMaxLayers][2 * kMaxFieldRadius + 1][2 * kMaxFieldRadius + 1] = {};
 	for (Patch& patch : g_patches) {
 		const int state = patch.state.load(std::memory_order_relaxed);
@@ -2994,10 +3507,10 @@ bool UpdateField(uint64_t now, int sandLayers) {
 			continue;
 		}
 		const int layer = patch.layer;
-		// kept while its setting still wants that effect and (when the player's place is known) it is within reach
+		// kept while this storm's setting still wants that effect and (when the player's place is known) it is within reach
 		const float x    = (static_cast<float>(patch.column) + 0.5f) * spacing - middle[0];
 		const float z    = (static_cast<float>(patch.row) + 0.5f) * spacing - middle[1];
-		const bool  keep = wanted[layer] == patch.effect && (!haveCentre || (std::fabs(x) <= reach && std::fabs(z) <= reach));
+		const bool  keep = patch.kind == storm && wanted[layer] == patch.effect && (!haveCentre || (std::fabs(x) <= reach && std::fabs(z) <= reach));
 		const int   dx   = patch.column - column;
 		const int   dy   = patch.row - row;
 		const bool  inField = keep && haveCentre && dx >= -radius && dx <= radius && dy >= -radius && dy <= radius;
@@ -3007,9 +3520,9 @@ bool UpdateField(uint64_t now, int sandLayers) {
 			}
 			busy = true;
 		} else if (state == kPatchFailed) {
-			if (!g_effectFailed[patch.effect]) {
-				g_effectFailed[patch.effect] = true;
-				Log("sandstorm: effect %d (%s) left out - the game did not create it", patch.effect, kSandEffects[patch.effect].name);
+			if (!patch.kind->failed[patch.effect]) {
+				patch.kind->failed[patch.effect] = true;
+				Log("%s: effect %d (%s) left out - the game did not create it", patch.kind->name, patch.effect, patch.kind->effects[patch.effect].name);
 			}
 			patch.state = kPatchFree;
 			continue;
@@ -3017,11 +3530,12 @@ bool UpdateField(uint64_t now, int sandLayers) {
 			patch.state = kPatchFree; // it went with its scene
 			continue;
 		} else if (!keep) {
-			if (settled) {
+			if (settled && stops < kMaxStopsAPass) {
 				StopPatch(patch.handle.load(std::memory_order_relaxed));
 				patch.state = kPatchFree;
+				++stops;
 			} else {
-				busy = true; // the game is busy with its own effect: next time
+				busy = true; // the game is busy with its own effect, or enough for one frame: next time
 			}
 			continue;
 		} else {
@@ -3077,6 +3591,7 @@ bool UpdateField(uint64_t now, int sandLayers) {
 		}
 		g_patchFreeHint   = slot + 1;
 		Patch& patch      = g_patches[slot];
+		patch.kind        = storm;
 		patch.effect      = wanted[bestLayer];
 		patch.layer       = bestLayer;
 		patch.column      = column + bestX;
@@ -3091,7 +3606,7 @@ bool UpdateField(uint64_t now, int sandLayers) {
 		g_patchBudget -= 1.0f;
 		present[bestLayer][bestX + radius][bestY + radius] = true;
 		if (++g_patchLogs <= 6) {
-			Log("sandstorm: patch of effect %d (%s) at %.0f, %.0f, %.0f", patch.effect, kSandEffects[patch.effect].name, patch.position[0], patch.position[1], patch.position[2]);
+			Log("%s: patch of effect %d (%s) at %.0f, %.0f, %.0f", storm->name, patch.effect, storm->effects[patch.effect].name, patch.position[0], patch.position[1], patch.position[2]);
 		}
 	}
 	return busy;
@@ -3106,19 +3621,140 @@ void CancelField() {
 	}
 }
 
+// ---- probe: can the game create this effect here? ("horror probe") ----
+// For choosing a storm's effects. One effect of the list is made the weather's marker for a few
+// seconds, the way a storm's first effect is (so it sits on the player), and whether the game
+// created it is said in the console and the log. "horror probe all" goes through the list.
+const StormEffect kProbeEffects[] = {
+	{ "none", nullptr },
+	{ "Act 4 Diab lava splash", "data/hd/vfx/particles/env/Act4/Diab/FX_Act4Diab_lavasplash.particles" },
+	{ "Act 4 Expansion edge blend 50", "data/hd/vfx/particles/env/Act4/Expansion/FX_Act4Expansion_edgeblend_50.particles" },
+	{ "Act 4 Expansion lava glow 30x30", "data/hd/vfx/particles/env/Act4/Expansion/FX_Act4Expansion_lavaglow_30x30.particles" },
+	{ "Act 4 Expansion lava splash", "data/hd/vfx/particles/env/Act4/Expansion/FX_Act4Expansion_lavasplash.particles" },
+	{ "Act 4 Fort falling rocks", "data/hd/vfx/particles/env/Act4/Fort/FX_Act4Fort_fallingrocks.particles" },
+	{ "Act 4 Fort fog 30x30", "data/hd/vfx/particles/env/Act4/Fort/FX_Act4Fort_fog_30x30.particles" },
+	{ "Act 4 Mesa chimney pit 10x10", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_ChimneyPit_10x10.particles" },
+	{ "Act 4 Mesa chimney pit 20x20", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_ChimneyPit_20x20.particles" },
+	{ "Act 4 Mesa chimney pit 40x40", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_ChimneyPit_40x40.particles" },
+	{ "Act 4 Mesa falling rocks", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_FallingRocks.particles" },
+	{ "Act 4 Mesa fog 30x30", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_fog_30x30.particles" },
+	{ "Act 4 Mesa hole haze 10x10", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_HoleHaze_10x10.particles" },
+	{ "Act 4 Mesa hole haze 20x20", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_HoleHaze_20x20.particles" },
+	{ "Act 4 Mesa hole haze 40x40", "data/hd/vfx/particles/env/Act4/Mesa/fx_act4mesa_holehaze_40x40.particles" },
+	{ "Act 4 Mesa hole steam 10x10", "data/hd/vfx/particles/env/Act4/Mesa/fx_act4mesa_holesteam_10x10.particles" },
+	{ "Act 4 Mesa hole steam 20x20", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_HoleSteam_20x20.particles" },
+	{ "Act 4 Mesa hole steam 40x40", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_HoleSteam_40x40.particles" },
+	{ "Act 4 Mesa wind huge 40x40", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_Wind_Huge_40x40.particles" },
+	{ "Act 4 Mesa wind small 10x10", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_Wind_Small_10x10.particles" },
+	{ "Act 4 Mesa wind ribbons 20x40", "data/hd/vfx/particles/env/Act4/Mesa/FX_Act4Mesa_WindRibbons_20x40.particles" },
+	{ "Mesa hole haze 10x10 (other file)", "data/hd/vfx/particles/env/Act4/Mesa/FX_HoleHaze_Mesa_10x10.particles" },
+	{ "Mesa hole haze 20x20 (other file)", "data/hd/vfx/particles/env/Act4/Mesa/FX_HoleHaze_Mesa_20x20.particles" },
+	{ "Mesa hole haze 40x40 (other file)", "data/hd/vfx/particles/env/Act4/Mesa/FX_HoleHaze_Mesa_40x40.particles" },
+	{ "Mesa wind huge (other file)", "data/hd/vfx/particles/env/Act4/Mesa/FX_Wind_Huge.particles" },
+	{ "Mesa wind small (other file)", "data/hd/vfx/particles/env/Act4/Mesa/FX_Wind_Small.particles" },
+	{ "Mesa wind ribbons (other file)", "data/hd/vfx/particles/env/Act4/Mesa/FX_WindRibbons_Mesa.particles" },
+	{ "ash embers 10x10", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_10x10.particles" },
+	{ "ash embers 10x30", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_10x30.particles" },
+	{ "ash embers 20x20", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_20x20.particles" },
+	{ "ash embers 30x30", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_30x30.particles" },
+	{ "ash embers high 30x30", "data/hd/vfx/particles/env/common/generic/FX_ashEmbers_high_30x30.particles" },
+	{ "ambient haze 30x30", "data/hd/vfx/particles/env/common/generic/FX_AmbientHaze_30x30.particles" },
+	{ "ambient haze high 30x30", "data/hd/vfx/particles/env/common/generic/FX_AmbientHaze_high_30x30.particles" },
+	{ "dust motes 30x30", "data/hd/vfx/particles/env/common/generic/FX_DustMotes_30x30.particles" },
+	{ "floor haze 40x40", "data/hd/vfx/particles/env/common/generic/FX_FloorHaze_40x40.particles" },
+	{ "scattered haze 30x30", "data/hd/vfx/particles/env/common/generic/FX_ScatteredHaze_30x30.particles" },
+	{ "soft haze 30x30", "data/hd/vfx/particles/env/common/generic/FX_SoftHaze_30x30.particles" },
+	{ "Travincal embers 20x20", "data/hd/vfx/particles/env/Act3/Travincal/FX_Act3Travincal_embers_20x20.particles" },
+	{ "Act 4 menu clouds", "data/hd/vfx/particles/env/UI/FX_UIFrontEndAct4_clouds.particles" },
+	{ "Act 4 menu haze", "data/hd/vfx/particles/env/UI/FX_UIFrontEndAct4_haze.particles" },
+	{ "Act 4 menu lava", "data/hd/vfx/particles/env/UI/FX_UIFrontEndAct4_lava.particles" },
+	{ "Act 4 menu motes", "data/hd/vfx/particles/env/UI/FX_UIFrontEndAct4_motes.particles" },
+	{ "campfire smoke", "data/hd/vfx/particles/env/Act1/Outdoors/FX_CampfireSmoke.particles" },
+	{ "Tristram fire, tiny", "data/hd/vfx/particles/env/Act1/Tristram/FX_Act1Tristram_fire_tiny.particles" },
+	{ "Tristram fire wall 10x10", "data/hd/vfx/particles/env/Act1/Tristram/FX_Act1Tristram_firewall_10x10.particles" },
+	{ "harem smoke 30x30", "data/hd/vfx/particles/env/Act2/palace/FX_Act2PalaceHarem_smoke_30x30.particles" },
+	{ "Lut Gholein smoke", "data/hd/vfx/particles/env/Act2/town/FX_Smoke.particles" },
+	{ "Lut Gholein smoke, white", "data/hd/vfx/particles/env/Act2/town/FX_Smoke_White.particles" },
+	{ "Kurast docks smoke", "data/hd/vfx/particles/env/Act3/DockTown/FX_Act3Docktown_smoke.particles" },
+	{ "Harrogath forge smoke", "data/hd/vfx/particles/env/Expansion/Town/FX_Act5Town_forgesmoke.particles" },
+};
+constexpr int      kProbeCount  = static_cast<int>(sizeof(kProbeEffects) / sizeof(kProbeEffects[0]));
+constexpr int      kProbeKind   = 1000; // a probe's g_weatherKind: 1000 + effect
+constexpr uint64_t kProbeShowMs = 6000; // how long each one is left up
+enum : int8_t { kProbeUnknown = 0, kProbeCreated = 1, kProbeNotCreated = 2 };
+enum : int { kProbeAskAll = -1, kProbeAskStop = -2 };
+std::atomic<int> g_probeRequest { 0 }; // from the console: an effect number, or one of the two above
+int      g_probeEffect   = 0;     // the one up now, 0 = none
+bool     g_probeAll      = false; // going through the whole list
+bool     g_probeReported = false; // its outcome has been said
+uint64_t g_probeUntil    = 0;
+int8_t   g_probeOutcome[kProbeCount]; // what the game did with each, this session
+
+void ProbeSay(const char* format, ...) {
+	char    text[400];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(text, sizeof(text), format, args);
+	va_end(args);
+	Log("%s", text);
+	if (g_ctx != nullptr) {
+		g_ctx->WriteConsoleMessage(text);
+	}
+}
+
+// The outcome of the probe that is up. One the game did not create is not waited on.
+void ProbeResult(uint64_t now, bool created, const char* why) {
+	if (g_probeEffect <= 0 || g_probeEffect >= kProbeCount || g_probeReported) {
+		return;
+	}
+	g_probeReported               = true;
+	g_probeOutcome[g_probeEffect] = created ? kProbeCreated : kProbeNotCreated;
+	if (created) {
+		ProbeSay("probe %d (%s): created - it is on you for %d seconds", g_probeEffect, kProbeEffects[g_probeEffect].name, static_cast<int>(kProbeShowMs / 1000));
+	} else {
+		ProbeSay("probe %d (%s): NOT created - %s", g_probeEffect, kProbeEffects[g_probeEffect].name, why);
+		g_probeUntil = now;
+	}
+}
+
+// The probe's time is up: the next of the list, or the end.
+void NextProbe(uint64_t now) {
+	const bool more = g_probeAll && g_probeEffect + 1 < kProbeCount;
+	if (!more && g_probeAll) {
+		int created = 0, missing = 0;
+		for (int i = 1; i < kProbeCount; ++i) {
+			created += g_probeOutcome[i] == kProbeCreated ? 1 : 0;
+			missing += g_probeOutcome[i] == kProbeNotCreated ? 1 : 0;
+		}
+		ProbeSay("probe: the whole list is done - %d created, %d not (every line is in horror-night.log)", created, missing);
+	}
+	g_probeEffect   = more ? g_probeEffect + 1 : 0;
+	g_probeAll      = more;
+	g_probeReported = false;
+	g_probeUntil    = now + kProbeShowMs;
+}
+
 // Once a second at most (ten times while the sandstorm's field is changing), and normally one
 // memory check: the weather object is remembered, and the game's update is only called when
 // the wanted weather changes (and every 10 s, in case the game stopped it on its own).
-// sandLayers: see SandLayers.
-void UpdateWeather(uint64_t now, int level, int sandLayers) {
+// storm, layers: see StormLayers.
+void UpdateWeather(uint64_t now, int level, const StormKind* storm, int layers) {
 	if (!g_weatherReady || now < g_weatherNext) {
 		return;
 	}
 	g_weatherNext     = now + 1000;
 	const bool inGame = level > 0;
+	// a probe asked for in the console, or called off (leaving the game calls it off too)
+	if (const int asked = g_probeRequest.exchange(0); asked != 0 || !inGame) {
+		const bool start = inGame && (asked == kProbeAskAll || (asked > 0 && asked < kProbeCount));
+		g_probeAll       = start && asked == kProbeAskAll;
+		g_probeEffect    = !start ? 0 : asked == kProbeAskAll ? 1 : asked;
+		g_probeReported  = false;
+		g_probeUntil     = now + kProbeShowMs;
+	}
 	// turned off (also from the in-game settings menu): stop our rain and give the weather back.
-	// A sandstorm's blowing sand does not need the rain and snow switched on.
-	const bool wanted = inGame && (g_config.weatherEnabled != 0 || sandLayers >= 0);
+	// A storm's blowing field does not need the rain and snow switched on.
+	const bool wanted = inGame && (g_config.weatherEnabled != 0 || layers >= 0 || g_probeEffect != 0);
 	if (!wanted && !g_weatherHeld) {
 		return;
 	}
@@ -3152,10 +3788,16 @@ void UpdateWeather(uint64_t now, int level, int sandLayers) {
 			// five seconds: the effect could not be made, and the game would refuse every start from now on
 			WeatherField<uint8_t>(0x60) = 0;
 			RestoreSnowString();
-			const int effect = g_weatherKind - 100;
-			if (effect > 0 && effect < kSandEffectCount) {
-				g_effectFailed[effect] = true;
-				Log("sandstorm: effect %d (%s) left out - the game never finished creating it", effect, kSandEffects[effect].name);
+			if (g_weatherKind >= kProbeKind) {
+				ProbeResult(now, false, "the game never finished creating it");
+			} else if (g_weatherKind >= kMarkerKind && (g_weatherKind - kMarkerKind) / kMarkerKind < kStormKinds) {
+				// a storm's marker: 100 + 100 * the storm's number + its effect
+				const StormKind& made   = g_storms[(g_weatherKind - kMarkerKind) / kMarkerKind];
+				const int        effect = g_weatherKind % kMarkerKind;
+				if (effect > 0 && effect < made.effectCount) {
+					made.failed[effect] = true;
+					Log("%s: effect %d (%s) left out - the game never finished creating it", made.name, effect, made.effects[effect].name);
+				}
 			}
 			g_weatherOn      = false;
 			g_weatherKind    = -1;
@@ -3166,8 +3808,19 @@ void UpdateWeather(uint64_t now, int level, int sandLayers) {
 		}
 	}
 
+	// a probe: what became of it, and the next one when its time is up
+	if (g_probeEffect != 0) {
+		g_weatherNext = now + 250;
+		if (g_weatherOn && g_weatherKind == kProbeKind + g_probeEffect && !g_snowSwapped && WeatherField<uint8_t>(0x60) == 0) {
+			ProbeResult(now, HandleAlive(WeatherField<uint32_t>(0x64)), "the game made nothing of it");
+		}
+		if (now >= g_probeUntil) {
+			NextProbe(now);
+		}
+	}
+
 	// the field first: patches that are no longer wanted go before the weather is handed back
-	const bool fieldBusy = UpdateField(now, wanted ? sandLayers : 0);
+	const bool fieldBusy = UpdateField(now, wanted ? storm : nullptr, wanted ? layers : 0);
 	if (fieldBusy) {
 		g_weatherNext = now + 100;
 	}
@@ -3192,16 +3845,21 @@ void UpdateWeather(uint64_t now, int level, int sandLayers) {
 	}
 	g_weatherHeld = true;
 
-	// what should be on: rain (0), snow (1), or nothing (-1). While a sandstorm blows it is the
-	// storm's marker: "snow" to the game, made from the first sand effect the storm wants
+	// what should be on: rain (0), snow (1), or nothing (-1). While a storm blows it is the
+	// storm's marker: "snow" to the game, made from the first effect the storm wants
 	// (see UpdateField).
 	int       type   = -1;
 	int       marker = 0;
 	int       amount = g_config.weatherIntensity;
 	const int fall   = LevelFall(level);
-	if (sandLayers >= 0) {
+	const bool probe = g_probeEffect != 0; // a probe is a marker too, and goes before the rest
+	if (probe) {
+		marker = g_probeEffect;
+		type   = 1;
+		amount = 100;
+	} else if (layers >= 0) {
 		int wantedEffects[kMaxLayers];
-		WantedEffects(sandLayers, wantedEffects);
+		WantedEffects(storm, layers, wantedEffects);
 		for (int layer = kMaxLayers - 1; layer >= 0; --layer) {
 			if (wantedEffects[layer] != 0) {
 				marker = wantedEffects[layer];
@@ -3214,7 +3872,8 @@ void UpdateWeather(uint64_t now, int level, int sandLayers) {
 	} else if (g_config.weatherEnabled != 0 && (fall == kFallRain || fall == kFallSnow)) {
 		type = fall == kFallRain ? 0 : 1;
 	}
-	const int kind = marker != 0 ? 100 + marker : type;
+	const StormEffect* const markerEffect = marker == 0 ? nullptr : probe ? &kProbeEffects[marker] : &storm->effects[marker];
+	const int kind = marker == 0 ? type : probe ? kProbeKind + marker : kMarkerKind + kMarkerKind * static_cast<int>(storm - g_storms) + marker;
 	// something else is playing (a storm's marker where snow should fall, another effect chosen
 	// for the storm): to the game they are all "snow", so it has to be stopped first
 	if (g_weatherOn && kind != g_weatherKind) {
@@ -3233,9 +3892,15 @@ void UpdateWeather(uint64_t now, int level, int sandLayers) {
 		// so it is only asked for when it is not there: asking again would have the game set
 		// an intensity the sand effect does not have, every time.
 		if (type != g_weatherSetType || (marker == 0 && (level != g_weatherSetLevel || amount != g_weatherSetAmount || now >= g_weatherReassert))) {
-			if (marker != 0 && !SwapSnowString(kSandEffects[marker].path)) {
-				g_effectFailed[marker] = true;
-				Log("sandstorm: effect %d (%s) left out - the game's weather effect names are not where they were expected", marker, kSandEffects[marker].name);
+			if (marker != 0 && !SwapSnowString(markerEffect->path)) {
+				if (probe) {
+					ProbeResult(now, false, "the game's weather effect names are not where they were expected");
+					g_probeEffect = 0; // the same goes for every other one
+					g_probeAll    = false;
+				} else {
+					storm->failed[marker] = true;
+					Log("%s: effect %d (%s) left out - the game's weather effect names are not where they were expected", storm->name, marker, markerEffect->name);
+				}
 				return;
 			}
 			struct {
@@ -3246,10 +3911,10 @@ void UpdateWeather(uint64_t now, int level, int sandLayers) {
 			if (g_snowSwapped && WeatherField<uint8_t>(0x60) == 0) {
 				RestoreSnowString(); // nothing had to be created (it is already there), or it was made on the spot
 			}
-			if (!g_weatherOn && g_weatherLogs < 6) {
+			if (!g_weatherOn && !probe && g_weatherLogs < 6) {
 				++g_weatherLogs;
 				if (marker != 0) {
-					Log("weather: the sandstorm's marker (effect %d, %s) started in level %d", marker, kSandEffects[marker].name, level);
+					Log("weather: the %s's marker (effect %d, %s) started in level %d", storm->name, marker, markerEffect->name, level);
 				} else {
 					Log("weather: %s started in level %d at %d%%", type == 0 ? "rain" : "snow", level, amount);
 				}
@@ -3507,10 +4172,14 @@ void __cdecl OnOverlayFrame(const D2RL::PluginContext* context, const D2RL::Over
 	}
 
 	const int level = g_level.load(std::memory_order_relaxed);
-	UpdateSandstorm(now, level);
-	UpdateSky(now, level > 0, SandBlend());
-	if (now >= g_weatherNext) { // once a second, ten times while the sand field is changing
-		UpdateWeather(now, level, SandLayers(level));
+	UpdateStorms(now, level);
+	UpdateMeteors(now, level);
+	UpdateBursts(now, level);
+	UpdateSky(now, level > 0, StormBlend());
+	if (now >= g_weatherNext) { // once a second, ten times while a storm's field is changing
+		StormKind* storm  = nullptr;
+		const int  layers = StormLayers(level, &storm);
+		UpdateWeather(now, level, storm, layers);
 	}
 	UpdateFalseHealth(level > 0);
 	UpdateSounds(now, level);
@@ -3628,7 +4297,9 @@ bool SetUpStorm() {
 			: "could not hook the lighting blend - in terror zones the flash and the sandstorm look stay hidden");
 	}
 	Log("sandstorm: %s", !g_skyReady ? "off - renderer code does not look as expected"
-		: g_config.sandEnabled != 0 ? "on where the mod installed the storm look (Act 2 desert)" : "switched off in the config");
+		: g_config.sand.enabled != 0 ? "on where the mod installed the storm look (Act 2 desert)" : "switched off in the config");
+	Log("ash storm: %s", !g_skyReady ? "off - renderer code does not look as expected"
+		: g_config.ash.enabled != 0 ? "on where the mod installed the storm look (Act 4)" : "switched off in the config");
 
 	// reading and processing the sounds takes most of a second: done off the game's threads
 	StartMixer();
@@ -3642,6 +4313,131 @@ bool SetUpStorm() {
 }
 
 // ---------------------------------------------------------------- console
+
+// How each kind of storm is spoken of in the console, and where its settings are in the toml.
+struct StormWords {
+	const char* section;   // in horror-night.toml
+	const char* stuff;     // what blows
+	const char* toggle;    // "horror <toggle>" starts or stops one
+	const char* fx;        // "horror <fx>" lists and sets its effects
+	const char* field;     // "horror <field>" sets its field
+	const char* where;
+	const char* modOption; // the D2RMM option that installs its look
+};
+const StormWords kStormWords[kStormKinds] = {
+	{ "sandstorm", "sand", "sand", "fx", "field", "the Act 2 desert", "Sandstorms in Act 2" },
+	{ "ashstorm", "ash", "ash", "ashfx", "ashfield", "Act 4", "Ash storms in Act 4" },
+};
+
+// "horror field 2 20 24 50": patches out from the player, sub-tiles between them, patches created a second, lean ahead in percent
+void ConsoleStormField(int which, const char* c) {
+	StormConfig&      config = *g_storms[which].config;
+	const StormWords& words  = kStormWords[which];
+	int               values[4] = { config.fieldRadius, config.fieldSpacing, config.fieldRate, config.fieldLead };
+	for (int given = 0; given < 4; ++given) {
+		while (*c == ' ' || *c == ',') {
+			++c;
+		}
+		if (*c < '0' || *c > '9') {
+			break;
+		}
+		values[given] = atoi(c);
+		while (*c >= '0' && *c <= '9') {
+			++c;
+		}
+	}
+	config.fieldRadius  = Clamp(values[0], 0, kMaxFieldRadius);
+	config.fieldSpacing = Clamp(values[1], 5, 60);
+	config.fieldRate    = Clamp(values[2], 1, 100);
+	config.fieldLead    = Clamp(values[3], 0, 100);
+	char value[16];
+	snprintf(value, sizeof(value), "%d", config.fieldRadius);
+	SaveConfigValue(words.section, "field_radius", value);
+	snprintf(value, sizeof(value), "%d", config.fieldSpacing);
+	SaveConfigValue(words.section, "field_spacing", value);
+	snprintf(value, sizeof(value), "%d", config.fieldRate);
+	SaveConfigValue(words.section, "field_rate", value);
+	snprintf(value, sizeof(value), "%d", config.fieldLead);
+	SaveConfigValue(words.section, "field_lead", value);
+	const int side = 2 * config.fieldRadius + 1;
+	char      text[512];
+	snprintf(text, sizeof(text), "Horrors in the Night: blowing %s is %d by %d patches of each effect, %d sub-tiles apart (about %d sub-tiles across), created %d a second, leaning %d%% ahead when you move. Set with: horror %s <how far out 0-%d> <spacing 5-60> <per second 1-100> <lean 0-100>",
+		words.stuff, side, side, config.fieldSpacing, side * config.fieldSpacing, config.fieldRate, config.fieldLead, words.field, kMaxFieldRadius);
+	g_ctx->WriteConsoleMessage(text);
+}
+
+// "horror fx" lists the effects; "horror fx 2 10 12" sets the storm's layers (0 = none)
+void ConsoleStormFx(int which, const char* c) {
+	StormKind&        storm  = g_storms[which];
+	StormConfig&      config = *storm.config;
+	const StormWords& words  = kStormWords[which];
+	int               layers[kMaxLayers] = {};
+	int               given              = 0;
+	char              text[512];
+	while (given < storm.layers) {
+		while (*c == ' ' || *c == ',') {
+			++c;
+		}
+		if (*c < '0' || *c > '9') {
+			break;
+		}
+		layers[given++] = Clamp(atoi(c), 0, storm.effectCount - 1);
+		while (*c >= '0' && *c <= '9') {
+			++c;
+		}
+	}
+	if (given > 0) {
+		for (int i = 0; i < storm.layers; ++i) {
+			config.layer[i] = layers[i];
+			char key[16], value[16];
+			snprintf(key, sizeof(key), "layer%d", i + 1);
+			snprintf(value, sizeof(value), "%d", layers[i]);
+			SaveConfigValue(words.section, key, value);
+		}
+		memset(storm.failed, 0, static_cast<size_t>(storm.effectCount) * sizeof(bool));
+	} else {
+		size_t used = 0;
+		text[0]     = '\0';
+		for (int i = 1; i < storm.effectCount; ++i) {
+			used += static_cast<size_t>(snprintf(text + used, sizeof(text) - used, "%s%d %s", used > 0 ? ", " : "Effects: ", i, storm.effects[i].name));
+			if (used > 150 || i == storm.effectCount - 1) {
+				g_ctx->WriteConsoleMessage(text);
+				used    = 0;
+				text[0] = '\0';
+			}
+		}
+	}
+	size_t used = static_cast<size_t>(snprintf(text, sizeof(text), "Horrors in the Night: %s layers are", storm.name));
+	for (int i = 0; i < storm.layers && used < sizeof(text) - 80; ++i) {
+		used += static_cast<size_t>(snprintf(text + used, sizeof(text) - used, "%s %d (%s)", i > 0 ? "," : "", config.layer[i],
+			storm.effects[Clamp(config.layer[i], 0, storm.effectCount - 1)].name));
+	}
+	snprintf(text + used, sizeof(text) - used, ". Set them with: horror %s <first> [second] ... (up to %d numbers, 0 = none)", words.fx, storm.layers);
+	g_ctx->WriteConsoleMessage(text);
+}
+
+// "horror sand" / "horror ash": starts or stops a storm that comes and goes
+void ConsoleStormToggle(int which) {
+	StormKind&        storm = g_storms[which];
+	const StormWords& words = kStormWords[which];
+	char              text[512];
+	if (!StormAllowed(storm)) {
+		if (storm.config->enabled == 0) {
+			snprintf(text, sizeof(text), "Horrors in the Night: the %s is switched off in the plugin's settings.", storm.name);
+		} else if (storm.installed->load() == 0) {
+			snprintf(text, sizeof(text), "Horrors in the Night: no %s look installed - turn on %s (and Always night) in D2RMM and Install.", storm.name, words.modOption);
+		} else {
+			snprintf(text, sizeof(text), "Horrors in the Night: the %s is not available with this game version.", storm.name);
+		}
+	} else if (storm.config->always != 0) {
+		snprintf(text, sizeof(text), "Horrors in the Night: the %s is set to never stop (%s always). Turn that off to have storms come and go, and to start and stop them here.", storm.name,
+			words.section);
+	} else {
+		storm.state.force = true;
+		snprintf(text, sizeof(text), "Horrors in the Night: %s started or stopped (seen in %s).", storm.name, words.where);
+	}
+	g_ctx->WriteConsoleMessage(text);
+}
 
 D2RL::ConsoleCommandResult __cdecl OnConsole(D2R::Game::Client*, const D2RL::ConsoleCommandContext* command, void*) noexcept {
 	const char* args = command != nullptr && command->args != nullptr ? command->args : "";
@@ -3663,98 +4459,61 @@ D2RL::ConsoleCommandResult __cdecl OnConsole(D2R::Game::Client*, const D2RL::Con
 	} else if (strncmp(args, "strike", 6) == 0) {
 		g_forceStrike = true;
 		g_ctx->WriteConsoleMessage("Horrors in the Night: lightning strike.");
-	} else if (strncmp(args, "field", 5) == 0) {
-		// "horror field 2 20 24 50": patches out from the player, sub-tiles between them, patches created a second, lean ahead in percent
-		const char* c         = args + 5;
-		int         values[4] = { g_config.sandFieldRadius, g_config.sandFieldSpacing, g_config.sandFieldRate, g_config.sandFieldLead };
-		for (int given = 0; given < 4; ++given) {
-			while (*c == ' ' || *c == ',') {
-				++c;
-			}
-			if (*c < '0' || *c > '9') {
-				break;
-			}
-			values[given] = atoi(c);
-			while (*c >= '0' && *c <= '9') {
-				++c;
-			}
+	} else if (strncmp(args, "meteor", 6) == 0) {
+		g_forceMeteor = true;
+		g_ctx->WriteConsoleMessage("Horrors in the Night: a volley of meteors falls around you on the next game frames (not in town).");
+	} else if (strncmp(args, "probe", 5) == 0) {
+		// "horror probe" lists the effects; "horror probe 27" has the game create one on you;
+		// "horror probe all" goes through the list; "horror probe stop" ends it
+		const char* c = args + 5;
+		while (*c == ' ') {
+			++c;
 		}
-		g_config.sandFieldRadius  = Clamp(values[0], 0, kMaxFieldRadius);
-		g_config.sandFieldSpacing = Clamp(values[1], 5, 60);
-		g_config.sandFieldRate    = Clamp(values[2], 1, 100);
-		g_config.sandFieldLead    = Clamp(values[3], 0, 100);
-		char value[16];
-		snprintf(value, sizeof(value), "%d", g_config.sandFieldRadius);
-		SaveConfigValue("sandstorm", "field_radius", value);
-		snprintf(value, sizeof(value), "%d", g_config.sandFieldSpacing);
-		SaveConfigValue("sandstorm", "field_spacing", value);
-		snprintf(value, sizeof(value), "%d", g_config.sandFieldRate);
-		SaveConfigValue("sandstorm", "field_rate", value);
-		snprintf(value, sizeof(value), "%d", g_config.sandFieldLead);
-		SaveConfigValue("sandstorm", "field_lead", value);
-		const int side = 2 * g_config.sandFieldRadius + 1;
-		snprintf(text, sizeof(text), "Horrors in the Night: blowing sand is %d by %d patches of each effect, %d sub-tiles apart (about %d sub-tiles across), created %d a second, leaning %d%% ahead when you move. Set with: horror field <how far out 0-%d> <spacing 5-60> <per second 1-100> <lean 0-100>",
-			side, side, g_config.sandFieldSpacing, side * g_config.sandFieldSpacing, g_config.sandFieldRate, g_config.sandFieldLead, kMaxFieldRadius);
-		g_ctx->WriteConsoleMessage(text);
-	} else if (strncmp(args, "fx", 2) == 0) {
-		// "horror fx" lists the effects; "horror fx 2 10 12" sets the sandstorm's layers (0 = none)
-		int         layers[kMaxLayers] = { 0, 0, 0 };
-		int         given              = 0;
-		const char* c                  = args + 2;
-		while (given < kMaxLayers) {
-			while (*c == ' ' || *c == ',') {
-				++c;
-			}
-			if (*c < '0' || *c > '9') {
-				break;
-			}
-			layers[given++] = Clamp(atoi(c), 0, kSandEffectCount - 1);
-			while (*c >= '0' && *c <= '9') {
-				++c;
-			}
-		}
-		if (given > 0) {
-			g_config.sandLayer1 = layers[0];
-			g_config.sandLayer2 = layers[1];
-			g_config.sandLayer3 = layers[2];
-			memset(g_effectFailed, 0, sizeof(g_effectFailed));
-			const char* const keys[kMaxLayers] = { "layer1", "layer2", "layer3" };
-			for (int i = 0; i < kMaxLayers; ++i) {
-				char value[16];
-				snprintf(value, sizeof(value), "%d", layers[i]);
-				SaveConfigValue("sandstorm", keys[i], value);
-			}
+		if (!g_weatherReady) {
+			g_ctx->WriteConsoleMessage("Horrors in the Night: probing effects is not available with this game version.");
+		} else if (strncmp(c, "all", 3) == 0) {
+			g_probeRequest = kProbeAskAll;
+			snprintf(text, sizeof(text), "Horrors in the Night: trying all %d effects on you, %d seconds each (in a game). Each outcome is said here and in horror-night.log. Stop with: horror probe stop",
+				kProbeCount - 1, static_cast<int>(kProbeShowMs / 1000));
+			g_ctx->WriteConsoleMessage(text);
+		} else if (strncmp(c, "stop", 4) == 0) {
+			g_probeRequest = kProbeAskStop;
+			g_ctx->WriteConsoleMessage("Horrors in the Night: probing stopped.");
+		} else if (*c >= '0' && *c <= '9') {
+			const int effect = Clamp(atoi(c), 1, kProbeCount - 1);
+			g_probeRequest   = effect;
+			snprintf(text, sizeof(text), "Horrors in the Night: trying effect %d (%s) on you (in a game).", effect, kProbeEffects[effect].name);
+			g_ctx->WriteConsoleMessage(text);
 		} else {
 			size_t used = 0;
 			text[0]     = '\0';
-			for (int i = 1; i < kSandEffectCount; ++i) {
-				used += static_cast<size_t>(snprintf(text + used, sizeof(text) - used, "%s%d %s", used > 0 ? ", " : "Effects: ", i, kSandEffects[i].name));
-				if (used > 150 || i == kSandEffectCount - 1) {
+			for (int i = 1; i < kProbeCount; ++i) {
+				used += static_cast<size_t>(snprintf(text + used, sizeof(text) - used, "%s%d %s", used > 0 ? ", " : "Effects: ", i, kProbeEffects[i].name));
+				if (used > 150 || i == kProbeCount - 1) {
 					g_ctx->WriteConsoleMessage(text);
 					used    = 0;
 					text[0] = '\0';
 				}
 			}
+			g_ctx->WriteConsoleMessage("Horrors in the Night: horror probe <number> has the game create that effect on you for a few seconds; horror probe all tries every one in turn.");
 		}
-		snprintf(text, sizeof(text), "Horrors in the Night: sandstorm layers are %d (%s), %d (%s), %d (%s). Set them with: horror fx <first> [second] [third]", g_config.sandLayer1,
-			kSandEffects[Clamp(g_config.sandLayer1, 0, kSandEffectCount - 1)].name, g_config.sandLayer2, kSandEffects[Clamp(g_config.sandLayer2, 0, kSandEffectCount - 1)].name,
-			g_config.sandLayer3, kSandEffects[Clamp(g_config.sandLayer3, 0, kSandEffectCount - 1)].name);
-		g_ctx->WriteConsoleMessage(text);
+	} else if (strncmp(args, "ashfield", 8) == 0) {
+		ConsoleStormField(kStormAsh, args + 8);
+	} else if (strncmp(args, "ashfx", 5) == 0) {
+		ConsoleStormFx(kStormAsh, args + 5);
+	} else if (strncmp(args, "ash", 3) == 0) {
+		ConsoleStormToggle(kStormAsh);
+	} else if (strncmp(args, "field", 5) == 0) {
+		ConsoleStormField(kStormSand, args + 5);
+	} else if (strncmp(args, "fx", 2) == 0) {
+		ConsoleStormFx(kStormSand, args + 2);
 	} else if (strncmp(args, "sand", 4) == 0) {
-		if (!SandAllowed()) {
-			g_ctx->WriteConsoleMessage(g_config.sandEnabled == 0 ? "Horrors in the Night: sandstorms are switched off in the plugin's settings."
-				: g_modSandstorm.load() == 0 ? "Horrors in the Night: no sandstorm look installed - turn on Sandstorms in Act 2 (and Always night) in D2RMM and Install."
-				: "Horrors in the Night: sandstorms are not available with this game version.");
-		} else if (g_config.sandAlways != 0) {
-			g_ctx->WriteConsoleMessage("Horrors in the Night: the sandstorm is set to never stop (sandstorm always). Turn that off to have storms come and go, and to start and stop them here.");
-		} else {
-			g_forceSand = true;
-			g_ctx->WriteConsoleMessage("Horrors in the Night: sandstorm started or stopped (seen in the Act 2 desert).");
-		}
+		ConsoleStormToggle(kStormSand);
 	} else {
-		snprintf(text, sizeof(text), "Horrors in the Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, sandstorm %s (%d%%, %d sand patches up), level %d. Commands: horror spawn | haunt | strike | sand | fx | field | status",
+		snprintf(text, sizeof(text), "Horrors in the Night: phantoms %s%s (alive %d, spawned %d, hits %d, rows %d/%d/%d, lightning row %d); storm %s, sandstorm %s (%d%%), ash storm %s (%d%%, %d meteors, %d burns), %d field patches up, level %d. Commands: horror spawn | haunt | strike | sand | fx | field | ash | ashfx | ashfield | meteor | probe | status",
 			g_serverReady.load() ? "on" : "off", g_diabloDead.load() ? ", stopped: Diablo is dead" : "", g_aliveCount.load(), g_totalSpawned.load(), g_totalDrains.load(), g_classes[1].count, g_classes[2].count,
-			g_classes[3].count, g_lightningRow[3], g_overlay != nullptr ? "on" : "off", SandAllowed() ? "available" : "off", g_sandShown.load(), g_patchesUp.load(), g_level.load());
+			g_classes[3].count, g_lightningRow[3], g_overlay != nullptr ? "on" : "off", StormAllowed(g_storms[kStormSand]) ? "available" : "off", Sand().shown.load(), StormAllowed(g_storms[kStormAsh]) ? "available" : "off",
+			g_storms[kStormAsh].state.shown.load(), g_totalMeteors.load(), g_totalBurns.load(), g_patchesUp.load(), g_level.load());
 		g_ctx->WriteConsoleMessage(text);
 	}
 	return D2RL::ConsoleCommandResult::Handled;
@@ -3765,9 +4524,9 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
 	.name        = "Horrors in the Night",
-	.version     = "1.1.1",
+	.version     = "1.2.0",
 	.author      = "Latedozer",
-	.description = "Phantom monsters that cannot be killed and vanish on a timer, lightning and thunder, and sandstorms in the Act 2 desert.",
+	.description = "Phantom monsters that cannot be killed and vanish on a timer, lightning and thunder, sandstorms in the Act 2 desert, and ash storms with meteors in Act 4.",
 	.flags       = D2RL::PluginFlags::Shared | D2RL::PluginFlags::NativeHooks,
 	.reserved    = {},
 };
@@ -3795,7 +4554,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 	DefaultLevelInfo();
 	SetUpServer();
 	SetUpStorm();
-	static_cast<void>(context->RegisterConsoleCommand("horror", OnConsole, "Horrors in the Night: status, spawn, haunt, strike, sand, fx, field"));
+	static_cast<void>(context->RegisterConsoleCommand("horror", OnConsole, "Horrors in the Night: status, spawn, haunt, strike, sand, fx, field, ash, ashfx, ashfield, meteor, probe"));
 	JoinSettingsMenu();
 	if (!g_menuJoined) {
 		Log("settings menu: I Hate TOMLs not available at load (will try again when a game starts)");

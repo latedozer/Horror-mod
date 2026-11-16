@@ -4,8 +4,8 @@
 
 [phantoms]
 # False monsters: they cannot be killed, their hits drain life but never kill,
-# and they vanish after a random time.
-enabled = true
+# and they vanish after a random time. Off as shipped: set to true to have them.
+enabled = false
 # Seconds between appearances (random between the two).
 min_interval = 40
 max_interval = 140
@@ -87,8 +87,96 @@ field_rate = 30
 field_lead = 50
 # Wind loudness, 0-300.
 wind_volume = 70
+# Only the wind's tones below this many Hz are heard; 0 is the whole wind.
+wind_low_pass = 0
 # Muffled wind in Lut Gholein and underground while a storm blows.
 indoor_wind = true
+
+[ashstorm]
+# Ash storms in Act 4 (the Outer Steppes to the Chaos Sanctuary): the air fills with ash and
+# ember-lit smoke, ash and embers blow past and the wind rises. Needs the mod's "Ash storms in
+# Act 4" option (with Always night on); which areas, and the storm's colours, are chosen there.
+enabled = true
+# Seconds of calm between storms (random between the two).
+min_calm = 60
+max_calm = 240
+# Seconds a storm blows (random between the two).
+min_length = 45
+max_length = 120
+# Seconds a storm takes to roll in, and to die down.
+fade = 8
+# How far the storm look goes at its height, 10-100.
+strength = 100
+# The storm never stops while you are out in Act 4. Set to false for storms that come and go:
+# the calm and storm times above are only used then.
+always = true
+# Blowing ash: 0 = none, 100 = on.
+dust = 100
+# What blows past: up to six of the game's own effects, layered. They come in one after
+# another as a storm builds, the last at its height. 0 = none; the same number twice stacks
+# that effect. Every layer is another field of patches, so more of them costs frame rate.
+# "horror ashfx" in the console lists the numbers; "horror ashfx 1 6 2 9 14" sets the layers
+# (as many numbers as you give, the rest become none) while you watch a storm.
+#    1 wind, small              7 ash and embers, high      13 steam, wide
+#    2 wind, huge               8 ash and embers, long      14 smoke column
+#    3 wind ribbons             9 fog                       15 smoke column, wide
+#    4 ash and embers, small   10 haze                      16 falling rocks
+#    5 ash and embers          11 haze, wide                17 lava glow
+#    6 ash and embers, wide    12 steam                     18 embers (Travincal's)
+layer1 = 6
+layer2 = 9
+layer3 = 11
+layer4 = 17
+layer5 = 14
+layer6 = 0
+# The field of those effects around you: how far out it goes, in patches (1 = 3 by 3 of each
+# effect, up to 5 = 11 by 11; more costs frame rate), and the distance between patches in
+# sub-tiles. "horror ashfield 3 20" in the console sets both while you watch.
+field_radius = 5
+field_spacing = 20
+# Patches created per second while the field is being laid out, 1-100 (third number of
+# "horror ashfield").
+field_rate = 30
+# While you move, the field leans ahead of you: 0 keeps it centred on you, 100 puts you at its
+# back edge (fourth number of "horror ashfield").
+field_lead = 50
+# Wind loudness, 0-300.
+wind_volume = 190
+# Only the wind's tones below this many Hz are heard: here the wind is all bass, a deep roar
+# without the whistling. 0 is the whole wind, as in the desert.
+wind_low_pass = 100
+# Muffled wind (and fire) in the Pandemonium Fortress while a storm blows.
+indoor_wind = true
+# The fire under the storm, a low roar and crackling embers: its volume, 0-300 (0 = none).
+fire_volume = 70
+# Now and then, out in the storm: a vent of steam, rock coming down. Volume 0-300 (0 = none)
+# and the seconds between them (random between the two).
+burst_volume = 70
+burst_min_interval = 10
+burst_max_interval = 40
+# Meteors: burning rocks fall from the sky while a storm shows. They are the game's own Meteor
+# with everything that hurts left out. "horror meteor" in the console drops a volley now.
+meteors = true
+# Seconds between volleys (random between the two), and how many meteors a volley has.
+meteor_min_interval = 40
+meteor_max_interval = 80
+meteors_min = 50
+meteors_max = 50
+# Milliseconds from one meteor of a volley to the next (random between the two). The game
+# counts in steps of 40 ms; 0 lets the whole volley fall together.
+meteor_gap_min = 40
+meteor_gap_max = 240
+# How near and how far from you they land, in tiles.
+meteor_min_distance = 3
+meteor_max_distance = 22
+# One meteor of a volley can be aimed at you. The Meteor's red marker shows on the ground
+# where you stand, and you have about two seconds to step out of it before it lands. If you
+# are still in it, it burns a share of your MAXIMUM life (it never kills: at least 1 life is
+# left). Chance is the percent of volleys that have an aimed meteor. false = meteors never hurt.
+meteor_hits = true
+meteor_hit_chance = 6
+meteor_hit_damage_min = 5
+meteor_hit_damage_max = 10
 
 [sounds]
 # Breathing, moans, distant screams and ravens (three calls) at random moments outside town.

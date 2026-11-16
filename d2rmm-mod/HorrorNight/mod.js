@@ -11,6 +11,9 @@ const RAIN_VFX = 'data/hd/vfx/particles/env/common/weather/Rain.particles';
 const SNOW_VFX = 'data/hd/vfx/particles/env/common/weather/Snow.particles';
 // lighting families of the Act 2 desert: Lut Gholein's (the open desert uses it too) and the Lost City's
 const SAND = ['act2_town', 'act2_ruin'];
+// lighting families of Act 4's outdoor areas: the Outer Steppes to the City of the Damned, the
+// River of Flame, the Chaos Sanctuary (the Pandemonium Fortress, act4_fort, keeps its own)
+const ASH = ['act4_mesa', 'act4_lava', 'act4_diab'];
 const STAGES = ['dawn1', 'dawn2', 'day', 'dusk1', 'dusk2', 'night'];
 
 // Every feature sits in a config section with its own on/off checkbox.
@@ -26,6 +29,8 @@ const lightningOn = weatherOn && config.lightning;
 const flashOn = lightningOn && config.skyFlash && alwaysNight;
 const sandOn = config.sandstormEnabled !== false && alwaysNight;
 const sandThick = Math.min(Math.max(Number.isFinite(config.sandThickness) ? config.sandThickness : 60, 10), 100) / 100;
+const ashOn = config.ashstormEnabled !== false && alwaysNight;
+const ashThick = Math.min(Math.max(Number.isFinite(config.ashThickness) ? config.ashThickness : 60, 10), 100) / 100;
 
 function visPath(name) {
   return 'hd\\env\\vis\\' + name + '.json';
@@ -149,6 +154,48 @@ function makeSandstorm(def) {
   }
 }
 
+// Ash storm: the same for Act 4. Its "day" profile becomes the height of a storm of ash and
+// embers: the distance fills with ash, smoke lies along the ground, the wind picks up and your
+// light reaches less far. The plugin fades it in and out, and only in the areas the level table
+// below marks for it. Three looks:
+//   lit    grey ash closing in, lit red-orange from below as if by the lava
+//   ash    grey ash and grey light, like near a volcano
+//   ember  red smoke and red light, close to the red the game gives Act 4's terror zones
+const ASH_LOOKS = {
+  lit: { far: { x: 0.2, y: 0.12, z: 0.09 }, low: { x: 0.42, y: 0.2, z: 0.1 }, key: { x: 1.0, y: 0.5, z: 0.25 }, smoke: { x: 0.6, y: 0.32, z: 0.2 } },
+  ash: { far: { x: 0.17, y: 0.16, z: 0.16 }, low: { x: 0.3, y: 0.29, z: 0.28 }, key: { x: 0.75, y: 0.73, z: 0.7 }, smoke: { x: 0.5, y: 0.48, z: 0.46 } },
+  ember: { far: { x: 0.28, y: 0.06, z: 0.04 }, low: { x: 0.45, y: 0.1, z: 0.06 }, key: { x: 1.0, y: 0.2, z: 0.15 }, smoke: { x: 0.65, y: 0.18, z: 0.1 } },
+};
+const ashLook = ASH_LOOKS[config.ashLook] || ASH_LOOKS.lit;
+function makeAshstorm(def) {
+  const vis = entity(def, 'vis_data');
+  const data = vis && vis.components[0];
+  if (!data) return;
+  if (typeof data.depthFogDensity === 'number') {
+    data.depthFogColor = { ...ashLook.far }; // the ash further off
+    data.depthFogDensity = Math.max(data.depthFogDensity, 1 + 2.5 * ashThick);
+  }
+  if (typeof data.heightFogDensity === 'number') {
+    data.heightFogColor = { ...ashLook.low }; // ash and smoke along the ground, caught by your light
+    data.heightFogDensity = Math.max(data.heightFogDensity, 0.5 + 1.5 * ashThick);
+    if (!(data.heightFogPlane > 0)) data.heightFogPlane = 5;
+  }
+  if (typeof data.windScale === 'number') data.windScale = 1.5; // the strongest any vanilla area uses
+  if (typeof data.playerUnitLightDistanceScaler === 'number') data.playerUnitLightDistanceScaler *= 1 - 0.3 * ashThick;
+  const key = light(def, 'global_key_light');
+  if (key) key.color = { ...ashLook.key };
+  // The renderer's volumetric fog, which no vanilla area switches on. Off unless asked for.
+  if (config.ashVolumetric && typeof data.fogDensity === 'number') {
+    data.fogDensity = ashThick;
+    data.fogDiffuse = { ...ashLook.smoke };
+    data.fogWind = 0.5;
+    data.fogChurnStrength = 0.5;
+    data.fogWispiness = 0.4;
+    data.fogPlayerRadius = 6;
+    data.fogPlayerFade = 0.5;
+  }
+}
+
 FAMILIES.forEach((family) => {
   const isTown = TOWNS.includes(family);
   const amount = isTown && darknessOn && config.gentleTowns ? Math.max(keep, 0.8) : keep;
@@ -177,6 +224,9 @@ FAMILIES.forEach((family) => {
     }
     if (stage === 'day' && sandOn && SAND.includes(family)) {
       makeSandstorm(out);
+    }
+    if (stage === 'day' && ashOn && ASH.includes(family)) {
+      makeAshstorm(out);
     }
     D2RMM.writeJson(visPath(family + '_' + stage), out);
   });
@@ -413,15 +463,64 @@ if (lightningOn) {
 }
 
 // ---------------------------------------------------------------------------
+// Meteors: harmless copies of the Sorceress' Meteor that the plugin drops around you during an
+// ash storm. The copy keeps everything the client shows (the rock falling with its tail, the
+// explosion and its small fires, the impact sound) and loses what the server does when it
+// lands: no hit, no damage, no burning ground.
+//   hnmeteor     falls without the Meteor's red marker on the ground (Param5 = 4243)
+//   hnmeteorhit  shows the marker: the one aimed at a player, who has until it lands to step
+//                out of it (Param5 = 4244); the plugin does the burning, never to death
+// The plugin finds the rows by Param4 = 7777 and those Param5 values.
+if (ashOn) {
+  const missilesFile = 'global\\excel\\missiles.txt';
+  const missiles = D2RMM.readTsv(missilesFile);
+  const base = missiles.rows.find((r) => r.Missile === 'meteorcenter');
+  if (base && !missiles.rows.some((r) => r.Missile === 'hnmeteor')) {
+    const add = (name, mark) => {
+      const row = { ...base, Missile: name };
+      const set = (column, value) => {
+        if (missiles.headers.includes(column)) row[column] = String(value);
+      };
+      set('*ID', missiles.rows.length);
+      set('Param4', 7777);
+      set('Param5', mark);
+      set('ClientSend', 1);
+      set('GetHit', 0);
+      set('ReturnFire', 0);
+      for (const c of ['pSrvHitFunc', 'pSrvDmgFunc', 'ResultFlags', 'HitFlags', 'sHitPar1', 'sHitPar2', 'sHitPar3', 'MinDamage', 'MaxDamage', 'EMin', 'EMax', 'EType', 'ELen', 'SubMissile1', 'SubMissile2', 'SubMissile3', 'HitSubMissile1', 'HitSubMissile2', 'HitSubMissile3', 'HitSubMissile4'])
+        set(c, '');
+      for (let i = 1; i <= 5; i++) {
+        for (const c of ['MinLevDam', 'MaxLevDam', 'MinELev', 'MaxELev']) set(c + i, '');
+      }
+      missiles.rows.push(row);
+    };
+    add('hnmeteor', 4243);
+    add('hnmeteorhit', 4244);
+    D2RMM.writeTsv(missilesFile, missiles);
+
+    const hdFile = 'hd\\missiles\\missiles.json';
+    const hd = D2RMM.readJson(hdFile);
+    if (hd) {
+      hd.hnmeteor = 'null'; // the game's own "nothing to show" (the falling rock is a missile of its own)
+      hd.hnmeteorhit = hd.meteorcenter || 'meteor_target_indicator';
+      D2RMM.writeJson(hdFile, hd);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The level table for the plugin: global\excel\d2rloader\horror-night\levels.tsv.
 //   #mod line: which of this mod's options the install was built with, so the plugin only
-//              holds the game on night, flashes the sky or raises a sandstorm when the
-//              lighting for it is really there.
+//              holds the game on night, flashes the sky or raises a sandstorm or an ash storm
+//              when the lighting for it is really there.
 //   per level: its phantom monsters on Normal and on Nightmare/Hell, then
 //     weather  what falls there: 0 nothing, 1 rain, 2 snow, 3 sand (a desert, for sandstorms)
 //     town     1 for a town
 //     under    for a level with no weather of its own, what falls outside it (same numbers):
 //              muffled thunder underground, muffled wind in Lut Gholein and the tombs
+//     ash      the Act 4 ash storm: 0 none, 1 it blows here, 2 sheltered from it (the Pandemonium
+//              Fortress: muffled wind). Its own column, after the others, so that a plugin from
+//              before the ash storm reads the table as it always did.
 // Rain or snow is the game's own Rain column; which of the two, and what is "outside", follows
 // the act the level's map type belongs to (Uber Tristram is an Act 5 level built from Act 1's
 // Tristram: it rains there).
@@ -437,19 +536,26 @@ if (lightningOn) {
   const types = optional('global\\excel\\lvltypes.txt');
   const actinfo = optional('global\\excel\\actinfo.txt');
 
+  // D2RMM keeps a table's line ends as they are: in a file with Windows line ends the last
+  // column's name and values end in a carriage return. "Act" is the last column of lvltypes.txt,
+  // so it is read under either name.
+  const cell = (row, column) => String(row[column] ?? row[column + '\r'] ?? '').trim();
   const typeAct = new Map();
   const typeName = new Map();
   ((types && types.rows) || []).forEach((t) => {
-    if (!/^\d+$/.test(t.Id || '')) return;
-    typeAct.set(t.Id, Number(t.Act));
-    typeName.set(t.Id, t.Name);
+    const id = cell(t, 'Id');
+    const act = Number(cell(t, 'Act'));
+    if (!/^\d+$/.test(id)) return;
+    if (act > 0) typeAct.set(id, act); // unreadable: the vanilla numbering below
+    typeName.set(id, cell(t, 'Name'));
   });
   const actOfType = (type) => {
     if (typeAct.has(type)) return typeAct.get(type);
     const n = Number(type); // vanilla numbering, should lvltypes.txt be unreadable
     return !(n > 0) ? 0 : n <= 11 ? 1 : n <= 19 ? 2 : n <= 25 ? 3 : n <= 28 ? 4 : 5;
   };
-  const nameOfType = (type) => typeName.get(type) || (type === '16' ? 'Act 2 - Desert' : type === '19' ? 'Act 2 - Arcane' : '');
+  const nameOfType = (type) =>
+    typeName.get(type) || (type === '16' ? 'Act 2 - Desert' : type === '19' ? 'Act 2 - Arcane' : type === '27' ? 'Act 4 - Mesa' : type === '28' ? 'Act 4 - Lava' : '');
   const towns = new Set(((actinfo && actinfo.rows) || []).map((a) => a.town).filter(Boolean));
   if (!towns.size) ['Act 1 - Town', 'Act 2 - Town', 'Act 3 - Town', 'Act 4 - Town', 'Act 5 - Town'].forEach((t) => towns.add(t));
 
@@ -466,12 +572,20 @@ if (lightningOn) {
     else if (act === 1 || act === 3) under = 1;
     else if (act === 5) under = 2;
     else if (act === 2 && type !== 'Act 2 - Arcane') under = 3;
+    // The ash storm: Act 4's open plains always; the River of Flame and the Chaos Sanctuary
+    // (both of the lava type, told apart by the level's name) when their options are on.
+    let ash = 0;
+    if (ashOn) {
+      if (type === 'Act 4 - Mesa') ash = 1;
+      else if (type === 'Act 4 - Lava') ash = (/diablo/i.test(level.Name || '') ? config.ashChaos !== false : config.ashRiver !== false) ? 1 : 0;
+      else if (town && act === 4) ash = 2;
+    }
     const monsters = levelMonsters.get(level.Id) || [[], []];
-    lines.push([level.Id, monsters[0].join(','), monsters[1].join(','), weather, town ? 1 : 0, under].join('\t'));
+    lines.push([level.Id, monsters[0].join(','), monsters[1].join(','), weather, town ? 1 : 0, under, ash].join('\t'));
   });
-  const options = ['#mod', 'alwaysNight=' + (alwaysNight ? 1 : 0), 'skyFlash=' + (flashOn ? 1 : 0), 'sandstorm=' + (sandOn ? 1 : 0)].join('\t');
+  const options = ['#mod', 'alwaysNight=' + (alwaysNight ? 1 : 0), 'skyFlash=' + (flashOn ? 1 : 0), 'sandstorm=' + (sandOn ? 1 : 0), 'ashstorm=' + (ashOn ? 1 : 0)].join('\t');
   D2RMM.writeTxt(
     'global\\excel\\d2rloader\\horror-night\\levels.tsv',
-    options + '\r\nlevel\tnormal\tnightmare_hell\tweather\ttown\tunder\r\n' + lines.join('\r\n') + '\r\n'
+    options + '\r\nlevel\tnormal\tnightmare_hell\tweather\ttown\tunder\tash\r\n' + lines.join('\r\n') + '\r\n'
   );
 }

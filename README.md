@@ -5,11 +5,11 @@ A horror overhaul for **Diablo II: Resurrected** (Reign of the Warlock, D2R 3.3/
 
 | Part | What it is | Needs |
 |---|---|---|
-| `d2rmm-mod/HorrorNight` | A [D2RMM](https://github.com/olegbl/d2rmm) mod that changes game data: lighting, fog, phantom monster rows, the lightning bolt, and a table of levels for the plugin | D2RMM 1.8+ |
+| `d2rmm-mod/HorrorNight` | A [D2RMM](https://github.com/olegbl/d2rmm) mod that changes game data: lighting, fog, phantom monster rows, the lightning bolt, the ash storm's meteors, and a table of levels for the plugin | D2RMM 1.8+ |
 | `plugin/` | A D2RLoader plugin (`d2rl-horror-night.dll`) that drives everything that happens at run time | D2RLoader with plugin ABI 4 |
 
 The mod works on its own (darker world, fog). Phantoms, hauntings, lightning, real weather,
-sandstorms and the whispers need the plugin as well.
+sandstorms, ash storms and the whispers need the plugin as well.
 
 ## What it does
 
@@ -31,16 +31,28 @@ sandstorms and the whispers need the plugin as well.
   patch a few tiles across, so the storm lays them out on a grid around you and moves the grid as
   you walk. Which effects, how far out and how dense are settings; choosing the same effect more than
   once stacks it for a thicker storm.
-- Storms show in terror zones too: while lightning flashes or a sandstorm blows, the zone's own
-  lighting gives way to it as much as the storm shows, and comes back as it passes.
+- An ash storm in Act 4: grey smoke lit red-orange from below closes in around you, ash, embers,
+  fog, haze, lava glow and columns of smoke blow past, and under a deep roar of wind you hear fire
+  burning, with a vent of steam or a rockfall now and then. It blows in the Outer Steppes, the
+  Plains of Despair, the City of the Damned, the River of Flame and the Chaos Sanctuary (the last
+  two can each be left calm), the whole time by default, or coming and going like the sandstorm.
+  In the Pandemonium Fortress you only hear it, muffled. The blowing field works like the
+  sandstorm's, with up to six of the game's own effects at once out of eighteen to choose from,
+  and the storm's look is one of three (grey lit from below, plain grey ash, ember red).
+- Meteors fall in the ash storm: every 40 to 80 seconds a volley of them comes down around you.
+  They are harmless copies of the Sorceress's Meteor. Now and then the first of a volley is aimed
+  at the spot you stand on, with the Meteor's red marker on the ground: step out of it in the two
+  and a half seconds before it lands, or lose 5–10% of your maximum life (it never kills).
+- Storms show in terror zones too: while lightning flashes or a sandstorm or ash storm blows, the
+  zone's own lighting gives way to it as much as the storm shows, and comes back as it passes.
 
-**Phantoms** (plugin)
+**Phantoms** (plugin; off as shipped, switch them on with `enabled` under `[phantoms]`)
 - False monsters appear near you: a twin of a melee monster that belongs to the area you are in.
 - They cannot be killed, their hits drain a share of your current life but never kill, and they
   vanish within seconds. Your mercenary ignores them and they ignore it.
 - After Diablo dies, phantoms stop for the rest of that game.
 
-**Hauntings** (plugin)
+**Hauntings** (plugin; they come with the phantoms)
 - Rarely, the phantom that appears is one of the dead wearing a townsperson's name.
 - While it is there, corpses around you get back up and your life orb reads 1 (display only).
 
@@ -57,9 +69,10 @@ sandstorms and the whispers need the plugin as well.
 4. Start the game twice the first time (D2RLoader builds its table cache on the first start).
 
 Settings:
-- Data-side (darkness, fog, light radius, flash look, sandstorm thickness): D2RMM's settings for the
-  mod, then **Install** again.
-- Plugin (timings, chances, damage, weather, storms, sandstorms): in game with
+- Data-side (darkness, fog, light radius, flash look, sandstorm thickness, the ash storm's look,
+  thickness and areas): D2RMM's settings for the mod, then **Install** again.
+- Plugin (timings, chances, damage, weather, storms, sandstorms, ash storms, meteors, sound
+  volumes): in game with
   [I Hate TOMLs](https://d2rloader.net) if you have it, or
   `<game>/mods/<mod>/d2rloader/config/horror-night.toml`.
 
@@ -67,19 +80,35 @@ Console (Ctrl + `): `horror status`, `horror spawn`, `horror strike`, `horror ha
 (starts or stops a sandstorm when they are set to come and go), `horror fx` (lists the sand effects by
 number; `horror fx 6 5 3` sets the storm's three effects while you watch) and `horror field 2 20 24 50`
 (how many patches out from you, the sub-tiles between them, how many are created a second, and how
-far the field leans ahead of you when you move, in percent). Both are saved.
+far the field leans ahead of you when you move, in percent). Both are saved. The ash storm has the
+same three as `horror ash`, `horror ashfx` (up to six numbers, 0 for none: `horror ashfx 6 9 11 17 14`)
+and `horror ashfield`; `horror meteor` drops a volley where you stand. `horror probe all` goes
+through some fifty of the game's effects, puts each on you for a few seconds and says in the log
+whether the game could create it there, for anyone picking effects for a storm.
 
 The mod tells the plugin which of its options it was installed with, so the plugin only holds the
-game on night, flashes the sky or raises a sandstorm when the lighting for it is there. With
-**Always night** off the game keeps its day and night cycle, and there are no sky flashes or sandstorms.
+game on night, flashes the sky or raises a sandstorm or ash storm when the lighting for it is there.
+With **Always night** off the game keeps its day and night cycle, and there are no sky flashes,
+sandstorms or ash storms.
 
-If you remove the plugin, turn off the mod options **Lightning lights the whole sky** and
-**Sandstorms in Act 2** and re-install; otherwise those areas' unused daylight profile shows at
-daytime, as a blinding flash or a standing sandstorm.
+If you remove the plugin, turn off the mod options **Lightning lights the whole sky**,
+**Sandstorms in Act 2** and **Ash storms in Act 4** and re-install; otherwise those areas' unused
+daylight profile shows at daytime, as a blinding flash or a standing storm.
+
+### If the ash storm is heavy on your machine, or hard to hear
+
+- As shipped the ash storm's field is five effects on an 11 by 11 grid each, 605 patches of
+  particles around you, and a volley is 50 meteors. If Act 4 runs slowly, lower **Blowing ash: how
+  far out** first (each step down removes a ring of patches from every effect), then set some of
+  the six effects to 0, then lower the meteors in a volley.
+- The ash storm's wind is all bass: only what the wind has below 100 Hz is played, at 190% to make
+  up for how quiet that sounds. On small speakers it may hardly be heard: raise **Wind: only tones
+  below (Hz)** (0 is the whole wind, as in the desert). With a subwoofer it may be too much: lower
+  **Wind volume**.
 
 ## Build the plugin
 
-The plugin plays thunder and ambient sounds from the game. Those files belong to Blizzard, so they are
+The plugin plays thunder, wind, fire and ambient sounds from the game. Those files belong to Blizzard, so they are
 neither in this repository nor in the DLL: at start-up the plugin reads them straight out of the
 installed game's own data (Battle.net and Steam editions) with [CascLib](https://github.com/ladislav-zezula/CascLib),
 decodes them with [dr_flac](https://github.com/mackron/dr_libs) and processes them (bass lift, gain,
@@ -101,9 +130,10 @@ SDK=../PluginSDK/include plugin/build.sh
 SDK=../PluginSDK/include tests/run.sh [extracted game data folder]
 ```
 
-`tests/plugin_test.cpp` checks the parts of the plugin that do not need the game (config file, level
-table, sound mixer, sandstorm clock, the hold on the time of day); it is built with mingw-w64 and run
-under Wine. `tests/mod.test.js` runs the D2RMM mod's script with Node against game data you extracted
+`tests/plugin_test.cpp` checks the parts of the plugin that do not need the game, against stand-ins
+for the game where it calls into it (config file, level table, sound mixer, the storms' clocks,
+fields and sounds, bolts and meteors on the server side, the hold on the time of day); it is built
+with mingw-w64 and run under Wine. `tests/mod.test.js` runs the D2RMM mod's script with Node against game data you extracted
 yourself (the `data` folder with `global/excel` and `hd/env/vis`) and checks what it would install.
 
 ## Compatibility
@@ -121,12 +151,16 @@ yourself (the `data` folder with `global/excel` and `hd/env/vis`) and checks wha
 - Where it rains, snows or storms comes from `levels.txt` and `lvltypes.txt` when the mod is installed,
   so levels added by other mods are covered. An older copy of the mod falls back to the vanilla level
   numbers.
-- The sandstorm look sits in the Act 2 lighting profiles `act2_town` and `act2_ruin`; another mod
-  that rewrites those after this one will change or remove it.
-- The game's weather only knows rain and snow. The blowing sand is its own Act 2 sand effects, placed
+- The sandstorm look sits in the Act 2 lighting profiles `act2_town` and `act2_ruin`, the ash storm
+  look in the Act 4 profiles `act4_mesa`, `act4_lava` and `act4_diab`; another mod that rewrites
+  those after this one will change or remove it.
+- The lightning bolt and the two meteors are rows appended to `missiles.txt` (copies of the game's
+  own, with their damage taken out). The plugin finds them by a mark in their parameters, not by
+  row number, so other mods' missiles do not get in the way.
+- The game's weather only knows rain and snow. The blowing sand and ash are its own particle effects, placed
   around the player with the game's own "particle effect at a place" call from a job in its entity
   world (the way it places rain splashes). Where the player is comes from the game's weather effect,
-  which it keeps on the player: while a storm blows that is the storm's first sand effect, created
+  which it keeps on the player: while a storm blows that is the storm's first effect, created
   by pointing the weather's snow effect name at it for that moment. Like the rest of the plugin this depends on the exact
   game version, and is switched off with a log line when the code does not look as expected.
 
