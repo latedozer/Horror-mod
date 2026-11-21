@@ -2,7 +2,7 @@
   "name": "A Darker Atmosphere",
   "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with A Darker Atmosphere's plugin) phantom monsters, lightning and thunder, sandstorms in the Act 2 desert, ash storms with meteors in Act 4, and blizzards with falling ice in Act 5.",
   "author": "Latedozer",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "config": [
     {
       "id": "darknessEnabled",

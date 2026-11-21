@@ -1784,6 +1784,32 @@ void TestWeather() {
 	g_weatherHeld  = false;
 	g_weatherReady = false;
 	g_fieldReady   = false;
+	// moving an effect that is up (a drifting dust devil): its place goes into its own matrix and
+	// the world one, and the world matrix it had becomes last frame's
+	{
+		const uint32_t index  = kFakeEntities - 1;
+		const uint32_t handle = index | (3u << 20);
+		const uint32_t none   = 0xfffff;
+		float*         t      = transforms[index];
+		memset(t, 0, sizeof(transforms[index]));
+		t[16] = t[21] = t[26] = 2.0f; // the world matrix: its scale...
+		t[28] = 10.0f;                // ...and where it is
+		t[29] = 1.0f;
+		t[30] = 20.0f;
+		memcpy(reinterpret_cast<uint8_t*>(t) + 0xc0, &none, 4); // no parent
+		table[index]         = handle;
+		const float to[3]    = { 13.0f, 1.0f, 24.0f };
+		const bool  moved    = MoveEntity(handle, to);
+		Check(moved && t[12] == 13.0f && t[13] == 1.0f && t[14] == 24.0f && t[28] == 13.0f && t[30] == 24.0f && t[44] == 10.0f && t[46] == 20.0f && t[16] == 2.0f && t[32] == 2.0f,
+			"an effect that is up is moved: the new place in its own and its world matrix, the old world matrix kept as last frame's, its scale untouched");
+		const uint32_t parent = 7;
+		memcpy(reinterpret_cast<uint8_t*>(t) + 0xc0, &parent, 4);
+		const float on[3] = { 99.0f, 9.0f, 99.0f };
+		Check(!MoveEntity(handle, on) && t[28] == 13.0f, "one that hangs on another entity is left alone");
+		memcpy(reinterpret_cast<uint8_t*>(t) + 0xc0, &none, 4);
+		table[index] = 0;
+		Check(!MoveEntity(handle, on) && t[28] == 13.0f, "...and so is one the game has removed");
+	}
 	g_base         = savedBase;
 	g_config       = Config {};
 	VirtualFree(image, 0, MEM_RELEASE);

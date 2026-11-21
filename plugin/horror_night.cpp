@@ -4061,6 +4061,9 @@ bool EntityPosition(const WorldView& world, uint32_t handle, float* position) {
 // Moves an entity that has no parent, the way the game's own "set transform" does (0x77da30): the
 // world matrix becomes last frame's, and the new place goes into its own matrix and the world one.
 // Only from inside the entity world (a queued job), where the game changes entities itself.
+// The component is found with checked reads and its memory asked about once; the writes themselves
+// are plain ones (a write through the system costs a hundred times a read under Wine, and this
+// runs some thirty times a second for every whirlwind).
 bool MoveEntity(uint32_t handle, const float* xyz) {
 	const WorldView world = ReadWorld();
 	if (!HandleAlive(world, handle)) {
@@ -4072,11 +4075,16 @@ bool MoveEntity(uint32_t handle, const float* xyz) {
 	if (transform == 0 || !SafeRead(transform + 0xc0, &parent) || (parent & 0xfffff) != 0xfffff || !SafeRead(transform + 0x40, &matrix)) {
 		return false;
 	}
-	const HANDLE self = GetCurrentProcess();
-	SIZE_T       done = 0;
-	return WriteProcessMemory(self, reinterpret_cast<LPVOID>(transform + 0x80), matrix, sizeof(matrix), &done)
-		&& WriteProcessMemory(self, reinterpret_cast<LPVOID>(transform + 0x30), xyz, 3 * sizeof(float), &done)
-		&& WriteProcessMemory(self, reinterpret_cast<LPVOID>(transform + 0x70), xyz, 3 * sizeof(float), &done);
+	MEMORY_BASIC_INFORMATION memory {};
+	if (VirtualQuery(reinterpret_cast<LPCVOID>(transform), &memory, sizeof(memory)) == 0 || memory.State != MEM_COMMIT
+		|| (memory.Protect != PAGE_READWRITE && memory.Protect != PAGE_WRITECOPY)
+		|| transform + 0xd0 > reinterpret_cast<uintptr_t>(memory.BaseAddress) + memory.RegionSize) {
+		return false;
+	}
+	memcpy(reinterpret_cast<void*>(transform + 0x80), matrix, sizeof(matrix));
+	memcpy(reinterpret_cast<void*>(transform + 0x30), xyz, 3 * sizeof(float));
+	memcpy(reinterpret_cast<void*>(transform + 0x70), xyz, 3 * sizeof(float));
+	return true;
 }
 
 struct SlotString {
@@ -5814,7 +5822,7 @@ constexpr D2RL::PluginInfo kPluginInfo {
 	.abiVersion  = D2RL_PLUGIN_ABI_VERSION,
 	.id          = "horror-night",
 	.name        = "A Darker Atmosphere",
-	.version     = "1.5.0",
+	.version     = "1.5.1",
 	.author      = "Latedozer",
 	.description = "Phantom monsters that cannot be killed and vanish on a timer, lightning and thunder, sandstorms in the Act 2 desert, ash storms with meteors in Act 4, and blizzards with falling ice in Act 5.",
 	.flags       = D2RL::PluginFlags::Shared | D2RL::PluginFlags::NativeHooks,
