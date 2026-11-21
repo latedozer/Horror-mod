@@ -1,6 +1,6 @@
-// Horrors in the Night - always night, darker world, light radius matters.
+// A Darker Atmosphere - always night, darker world, light radius matters.
 // The look is all in the HD lighting profiles (data/hd/env/vis). The rest is data for the
-// Horrors in the Night plugin: phantom monster rows, the lightning bolt, and a table of levels.
+// A Darker Atmosphere plugin: phantom monster rows, the lightning bolt, and a table of levels.
 const FAMILIES = ["act1_barracks", "act1_campfire", "act1_catacombs", "act1_cathedral", "act1_caves", "act1_court", "act1_crypt", "act1_outdoors", "act1_tristram", "act2_arcane", "act2_bigcliff", "act2_maggot", "act2_outdoors", "act2_palace", "act2_palace_cells", "act2_palace_clean", "act2_ruin", "act2_sewer", "act2_tomb", "act2_town", "act3_docktown", "act3_jungle", "act3_jungle_dungeon", "act3_kurast", "act3_kurast_stone_tile", "act3_sewer", "act3_spider", "act3_temple", "act3_travincal", "act4_diab", "act4_fort", "act4_lava", "act4_mesa", "expansion_baallair", "expansion_baallair_throneroom", "expansion_icecave", "expansion_mountaintop", "expansion_ruins", "expansion_ruins_snow", "expansion_siege", "expansion_siege_town", "expansion_town", "expansion_wildtemple", "expansion_wildtemple_tempenter", "uberarreatsummit"];
 const SINGLES = ["act1_barracks_desecrated", "act1_catacombs_desecrated", "act1_caves_desecrated", "act1_court_desecrated", "act1_crypt_desecrated", "act1_outdoors_desecrated", "act1_outdoors_interior01_vis", "act2_arcane_desecrated", "act2_maggot_desecrated", "act2_palace_cells_desecrated", "act2_palace_desecrated", "act2_sewer_desecrated", "act2_tainted_sun", "act2_tomb_desecrated", "act2_town_desecrated", "act2_town_interior_vis", "act3_docktown_desecrated", "act3_jungle_dungeon_desecrated", "act3_sewer_desecrated", "act3_spider_desecrated", "act3_temple_desecrated", "act3_travincal_desecrated", "act4_fort_interior_vis", "act4_lava_desecrated", "act4_mesa_desecrated", "denofevil_vis", "diabloappears_vis", "expansion_baallair_throneroom_desecrated", "expansion_icecave_desecrated", "expansion_mountaintop_desecrated", "expansion_siege_desecrated", "expansion_wildtemple_desecrated", "expansion_wildtemple_tempenter_desecrated", "uberarreatsummit_desecrated", "visbox_act1_cathedral_vis", "visbox_docktown_interior01_vis", "visbox_harrograth_vis", "visbox_kurast_hut_ambient_vis", "visbox_kurast_temple_ambient_vis", "visbox_monastry_vis", "visbox_tempenter_darkness_vis", "visbox_tempenter_roof_vis", "visbox_tower_vis"];
 const TOWNS = ["act2_town", "act3_docktown", "act4_fort", "expansion_town", "expansion_siege_town"];
@@ -14,6 +14,13 @@ const SAND = ['act2_town', 'act2_ruin'];
 // lighting families of Act 4's outdoor areas: the Outer Steppes to the City of the Damned, the
 // River of Flame, the Chaos Sanctuary (the Pandemonium Fortress, act4_fort, keeps its own)
 const ASH = ['act4_mesa', 'act4_lava', 'act4_diab'];
+// Act 5's blizzard takes the "day" lighting of the snowy families (the SNOW list above), which the
+// lightning flash would otherwise use: in Act 5 the falling ice replaces the lightning.
+// Act 3's monsoon: the outdoor families of Kurast (the docks, the jungles, the city, Travincal).
+// Here the lightning stays, so these families carry four looks side by side for the plugin to
+// blend between: dawn1 the lightning flash, dawn2 the night, day the monsoon, dusk1 the monsoon
+// lit by lightning (everywhere else the flash is the "day" look and nothing else is).
+const MONSOON = ['act3_jungle', 'act3_kurast', 'act3_kurast_stone_tile', 'act3_docktown', 'act3_travincal'];
 const STAGES = ['dawn1', 'dawn2', 'day', 'dusk1', 'dusk2', 'night'];
 
 // Every feature sits in a config section with its own on/off checkbox.
@@ -31,6 +38,11 @@ const sandOn = config.sandstormEnabled !== false && alwaysNight;
 const sandThick = Math.min(Math.max(Number.isFinite(config.sandThickness) ? config.sandThickness : 60, 10), 100) / 100;
 const ashOn = config.ashstormEnabled !== false && alwaysNight;
 const ashThick = Math.min(Math.max(Number.isFinite(config.ashThickness) ? config.ashThickness : 60, 10), 100) / 100;
+const blizzardOn = config.blizzardEnabled !== false && alwaysNight;
+const blizzardThick = Math.min(Math.max(Number.isFinite(config.blizzardThickness) ? config.blizzardThickness : 60, 10), 100) / 100;
+const iceOn = blizzardOn && config.blizzardIce !== false;
+const monsoonOn = config.monsoonEnabled !== false && alwaysNight;
+const monsoonThick = Math.min(Math.max(Number.isFinite(config.monsoonThickness) ? config.monsoonThickness : 60, 10), 100) / 100;
 
 function visPath(name) {
   return 'hd\\env\\vis\\' + name + '.json';
@@ -101,7 +113,7 @@ function darken(def, amount) {
   }
 }
 
-// Sky flash: the Horrors in the Night plugin holds the renderer on "night" and, for a lightning
+// Sky flash: A Darker Atmosphere's plugin holds the renderer on "night" and, for a lightning
 // strike, blends for a split second toward the "day" profile. So in stormy outdoor areas
 // the day profile becomes the lit-by-lightning look: cold, bright, and monsters fully lit.
 // Without the plugin the game's own clock would show this profile as daytime.
@@ -196,6 +208,72 @@ function makeAshstorm(def) {
   }
 }
 
+// Blizzard: the same for Act 5. Its "day" lighting becomes the height of a blizzard: snow fills
+// the air until the distance is a pale grey wall, drifts lie along the ground and catch your light,
+// the light turns cold and blue, the wind is at its hardest and your light reaches less far. The
+// plugin fades it in and out where the level table below says it blows.
+function makeBlizzard(def) {
+  const vis = entity(def, 'vis_data');
+  const data = vis && vis.components[0];
+  if (!data) return;
+  if (typeof data.depthFogDensity === 'number') {
+    data.depthFogColor = { x: 0.3, y: 0.33, z: 0.38 }; // the wall of snow further off
+    data.depthFogDensity = Math.max(data.depthFogDensity, 1 + 2.5 * blizzardThick);
+  }
+  if (typeof data.heightFogDensity === 'number') {
+    data.heightFogColor = { x: 0.44, y: 0.48, z: 0.55 }; // drifting snow along the ground, caught by your light
+    data.heightFogDensity = Math.max(data.heightFogDensity, 0.5 + 1.5 * blizzardThick);
+    if (!(data.heightFogPlane > 0)) data.heightFogPlane = 5;
+  }
+  if (typeof data.windScale === 'number') data.windScale = 1.5; // the strongest any vanilla area uses
+  if (typeof data.playerUnitLightDistanceScaler === 'number') data.playerUnitLightDistanceScaler *= 1 - 0.3 * blizzardThick;
+  const key = light(def, 'global_key_light');
+  if (key) key.color = { x: 0.62, y: 0.74, z: 1.0 }; // cold moonlight through the snow
+  // The renderer's volumetric fog, which no vanilla area switches on. Off unless asked for.
+  if (config.blizzardVolumetric && typeof data.fogDensity === 'number') {
+    data.fogDensity = blizzardThick;
+    data.fogDiffuse = { x: 0.7, y: 0.75, z: 0.85 };
+    data.fogWind = 0.8;
+    data.fogChurnStrength = 0.6;
+    data.fogWispiness = 0.5;
+    data.fogPlayerRadius = 6;
+    data.fogPlayerFade = 0.5;
+  }
+}
+
+// Monsoon: the same for Act 3. Its look is the height of a tropical storm: the rain closes the
+// jungle in behind a dark green-grey wall, mist lies along the ground and catches your light,
+// the wind is at its hardest and your light reaches less far. The plugin fades it in and out
+// where the level table below says it blows.
+function makeMonsoon(def) {
+  const vis = entity(def, 'vis_data');
+  const data = vis && vis.components[0];
+  if (!data) return;
+  if (typeof data.depthFogDensity === 'number') {
+    data.depthFogColor = { x: 0.1, y: 0.15, z: 0.13 }; // the wall of rain further off
+    data.depthFogDensity = Math.max(data.depthFogDensity, 1 + 2.5 * monsoonThick);
+  }
+  if (typeof data.heightFogDensity === 'number') {
+    data.heightFogColor = { x: 0.2, y: 0.28, z: 0.24 }; // mist and spray along the ground, caught by your light
+    data.heightFogDensity = Math.max(data.heightFogDensity, 0.5 + 1.5 * monsoonThick);
+    if (!(data.heightFogPlane > 0)) data.heightFogPlane = 5;
+  }
+  if (typeof data.windScale === 'number') data.windScale = 1.5; // the strongest any vanilla area uses
+  if (typeof data.playerUnitLightDistanceScaler === 'number') data.playerUnitLightDistanceScaler *= 1 - 0.3 * monsoonThick;
+  const key = light(def, 'global_key_light');
+  if (key) key.color = { x: 0.55, y: 0.75, z: 0.68 }; // what light there is comes through wet leaves
+  // The renderer's volumetric fog, which no vanilla area switches on. Off unless asked for.
+  if (config.monsoonVolumetric && typeof data.fogDensity === 'number') {
+    data.fogDensity = monsoonThick;
+    data.fogDiffuse = { x: 0.35, y: 0.45, z: 0.4 };
+    data.fogWind = 0.8;
+    data.fogChurnStrength = 0.6;
+    data.fogWispiness = 0.5;
+    data.fogPlayerRadius = 6;
+    data.fogPlayerFade = 0.5;
+  }
+}
+
 FAMILIES.forEach((family) => {
   const isTown = TOWNS.includes(family);
   const amount = isTown && darknessOn && config.gentleTowns ? Math.max(keep, 0.8) : keep;
@@ -219,8 +297,16 @@ FAMILIES.forEach((family) => {
     darken(out, amount);
     addFog(out);
     addWeather(out, family);
-    if (stage === 'day' && flashOn && (RAIN.includes(family) || SNOW.includes(family))) {
+    const monsoon = monsoonOn && MONSOON.includes(family);
+    if (monsoon) {
+      // four looks in a row (see MONSOON): flash, night, monsoon, monsoon lit by lightning
+      if (stage === 'day' || stage === 'dusk1') makeMonsoon(out);
+      if (flashOn && (stage === 'dawn1' || stage === 'dusk1')) makeFlash(out, night);
+    } else if (stage === 'day' && flashOn && (RAIN.includes(family) || (SNOW.includes(family) && !blizzardOn))) {
       makeFlash(out, night);
+    }
+    if (stage === 'day' && blizzardOn && SNOW.includes(family)) {
+      makeBlizzard(out);
     }
     if (stage === 'day' && sandOn && SAND.includes(family)) {
       makeSandstorm(out);
@@ -243,7 +329,7 @@ SINGLES.forEach((name) => {
 });
 
 // ---------------------------------------------------------------------------
-// Phantoms: the monster rows the Horrors in the Night plugin spawns. Without the plugin
+// Phantoms: the monster rows A Darker Atmosphere's plugin spawns. Without the plugin
 // (d2rl-horror-night.dll) these rows are never used.
 // Every melee monster that can appear in a level gets a phantom twin, so a phantom
 // always looks like something that belongs where you are. A twin deals no table
@@ -407,7 +493,7 @@ if (config.phantoms) {
 }
 
 // ---------------------------------------------------------------------------
-// Lightning: a harmless copy of the Thunder Storm bolt that the Horrors in the Night
+// Lightning: a harmless copy of the Thunder Storm bolt that A Darker Atmosphere's
 // plugin drops near you during storms. No skill, no damage, hits nothing; it
 // only shows the bolt, cracks, and lights the area around it.
 // The plugin finds the row by Param4 = 7777 and Param5 = 4242.
@@ -509,10 +595,111 @@ if (ashOn) {
 }
 
 // ---------------------------------------------------------------------------
+// Falling ice: the blizzard's danger, in place of the lightning. Harmless copies of the Meteor
+// above, the way it falls, but what falls is a spike of ice (the Sorceress' Glacial Spike) and what it
+// does on landing is the Glacial Spike's freezing burst, without the fire.
+//   hnicefall   the falling shard (a copy of the Meteor's falling rock, shown as a Glacial Spike:
+//               the Blizzard's own shard is a short effect that draws its own drop, and is over
+//               long before a fall of the Meteor's length comes into view)
+//   hnice       falls without a marker on the ground (Param5 = 4245)
+//   hnicehit    shows a marker: the one aimed at a player, who has until it lands to step out of
+//               it (Param5 = 4246); the plugin does the damage, never to death
+// The plugin finds the rows by Param4 = 7777 and those Param5 values.
+// 'ice': no picture of its own - the plugin shows the marker (the Meteor's circle brings the
+// Meteor's impact with it when the shard lands)
+const ICE_MARKERS = { ice: 'null', meteor: 'meteor_target_indicator', crack: 'icecrack' };
+if (iceOn) {
+  const missilesFile = 'global\\excel\\missiles.txt';
+  const missiles = D2RMM.readTsv(missilesFile);
+  const centre = missiles.rows.find((r) => r.Missile === 'meteorcenter');
+  const rock = missiles.rows.find((r) => r.Missile === 'meteor');
+  if (centre && rock && !missiles.rows.some((r) => r.Missile === 'hnice')) {
+    const make = (base, name) => {
+      const row = { ...base, Missile: name };
+      const set = (column, value) => {
+        if (missiles.headers.includes(column)) row[column] = String(value);
+      };
+      set('*ID', missiles.rows.length);
+      missiles.rows.push(row);
+      return set;
+    };
+    make(rock, 'hnicefall');
+    const add = (name, mark) => {
+      const set = make(centre, name);
+      set('Param4', 7777);
+      set('Param5', mark);
+      set('ClientSend', 1);
+      set('GetHit', 0);
+      set('ReturnFire', 0);
+      for (const c of ['pSrvHitFunc', 'pSrvDmgFunc', 'ResultFlags', 'HitFlags', 'sHitPar1', 'sHitPar2', 'sHitPar3', 'MinDamage', 'MaxDamage', 'EMin', 'EMax', 'EType', 'ELen', 'SubMissile1', 'SubMissile2', 'SubMissile3', 'HitSubMissile1', 'HitSubMissile2', 'HitSubMissile3', 'HitSubMissile4', 'CltSubMissile2', 'CltHitSubMissile3', 'CltHitSubMissile4'])
+        set(c, ''); // the last two are the Meteor's fires on the ground (the third is set again below)
+      for (let i = 1; i <= 5; i++) {
+        for (const c of ['MinLevDam', 'MaxLevDam', 'MinELev', 'MaxELev']) set(c + i, '');
+      }
+      set('CltSubMissile1', 'hnicefall');
+      // on landing: what a Glacial Spike does when it hits - the freezing burst and the ice thrown
+      // out of it - with a flash of blue light where the Meteor has a white one
+      set('CltHitSubMissile1', 'freezingarrowexp1');
+      set('cHitPar1', 3);
+      set('CltHitSubMissile2', 'bluelightmissile');
+      set('CltHitSubMissile3', 'freezingarrowexp2');
+      set('cHitPar2', 3);
+      set('ProgSound', 'sorceress_blizzard_impact_1');
+      // a cold blue glow while it falls, as the game's ice missiles have
+      set('Red', 81);
+      set('Green', 81);
+      set('Blue', 255);
+    };
+    add('hnice', 4245);
+    add('hnicehit', 4246);
+    D2RMM.writeTsv(missilesFile, missiles);
+
+    const hdFile = 'hd\\missiles\\missiles.json';
+    const hd = D2RMM.readJson(hdFile);
+    if (hd) {
+      hd.hnicefall = 'glacial_spike'; // the Sorceress' Glacial Spike, coming down
+      hd.hnice = 'null';
+      hd.hnicehit = ICE_MARKERS[config.iceMarker] || ICE_MARKERS.ice;
+      D2RMM.writeJson(hdFile, hd);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Snakes in Act 3: the little snakes of the jungle are critters, which levels.txt gives a percent
+// chance to appear (cpct) in up to four slots (cmon). Vanilla has the snake once, at 30, beside
+// the parrot. More of them the way the game itself has more rats in Kurast's sewers (the rat twice,
+// at 100): a higher chance, and the snake again in the slots the level leaves empty.
+//   more   the snake's chance 100
+//   many   ...and the snake in the two empty slots as well, at 100
+const SNAKES = { vanilla: null, more: { chance: 100, fill: false }, many: { chance: 100, fill: true } };
+const snakes = Object.prototype.hasOwnProperty.call(SNAKES, config.act3Snakes) ? SNAKES[config.act3Snakes] : SNAKES.many;
+if (snakes) {
+  const levelsFile = 'global\\excel\\levels.txt';
+  const levels = D2RMM.readTsv(levelsFile);
+  let changed = false;
+  levels.rows.forEach((level) => {
+    const slots = [1, 2, 3, 4];
+    if (!slots.some((n) => level['cmon' + n] === 'snake')) return; // only where the game has snakes already
+    slots.forEach((n) => {
+      if (level['cmon' + n] === 'snake') {
+        level['cpct' + n] = String(snakes.chance);
+        changed = true;
+      } else if (snakes.fill && !level['cmon' + n]) {
+        level['cmon' + n] = 'snake';
+        level['cpct' + n] = String(snakes.chance);
+        changed = true;
+      }
+    });
+  });
+  if (changed) D2RMM.writeTsv(levelsFile, levels);
+}
+
+// ---------------------------------------------------------------------------
 // The level table for the plugin: global\excel\d2rloader\horror-night\levels.tsv.
 //   #mod line: which of this mod's options the install was built with, so the plugin only
-//              holds the game on night, flashes the sky or raises a sandstorm or an ash storm
-//              when the lighting for it is really there.
+//              holds the game on night, flashes the sky or raises a sandstorm, an ash storm or
+//              a blizzard when the lighting for it is really there.
 //   per level: its phantom monsters on Normal and on Nightmare/Hell, then
 //     weather  what falls there: 0 nothing, 1 rain, 2 snow, 3 sand (a desert, for sandstorms)
 //     town     1 for a town
@@ -521,6 +708,12 @@ if (ashOn) {
 //     ash      the Act 4 ash storm: 0 none, 1 it blows here, 2 sheltered from it (the Pandemonium
 //              Fortress: muffled wind). Its own column, after the others, so that a plugin from
 //              before the ash storm reads the table as it always did.
+//     blizzard the Act 5 blizzard, the same way: 1 it blows here (Act 5's open snowfields), 2
+//              sheltered from it (Harrogath, and everything underground in Act 5: muffled wind).
+//              Wherever it is not 0, the falling ice replaces the lightning and thunder.
+//     monsoon  the Act 3 monsoon, the same way: 1 it blows here (Act 3's open country), 2
+//              sheltered from it (the Kurast Docks, and everything underground in Act 3). Rain,
+//              lightning and thunder carry on in a monsoon.
 // Rain or snow is the game's own Rain column; which of the two, and what is "outside", follows
 // the act the level's map type belongs to (Uber Tristram is an Act 5 level built from Act 1's
 // Tristram: it rains there).
@@ -580,12 +773,25 @@ if (ashOn) {
       else if (type === 'Act 4 - Lava') ash = (/diablo/i.test(level.Name || '') ? config.ashChaos !== false : config.ashRiver !== false) ? 1 : 0;
       else if (town && act === 4) ash = 2;
     }
+    // The blizzard: every open snowfield of Act 5; Harrogath and Act 5's caves and temples shelter.
+    let blizzard = 0;
+    if (blizzardOn && act === 5) {
+      if (weather === 2 && !town) blizzard = 1;
+      else if (town || under === 2) blizzard = 2;
+    }
+    // The monsoon: Act 3's open country (wherever it rains outside the docks); the Kurast Docks and
+    // everything underground in Act 3 shelter from it.
+    let monsoon = 0;
+    if (monsoonOn && act === 3) {
+      if (weather === 1 && !town) monsoon = 1;
+      else if (town || under === 1) monsoon = 2;
+    }
     const monsters = levelMonsters.get(level.Id) || [[], []];
-    lines.push([level.Id, monsters[0].join(','), monsters[1].join(','), weather, town ? 1 : 0, under, ash].join('\t'));
+    lines.push([level.Id, monsters[0].join(','), monsters[1].join(','), weather, town ? 1 : 0, under, ash, blizzard, monsoon].join('\t'));
   });
-  const options = ['#mod', 'alwaysNight=' + (alwaysNight ? 1 : 0), 'skyFlash=' + (flashOn ? 1 : 0), 'sandstorm=' + (sandOn ? 1 : 0), 'ashstorm=' + (ashOn ? 1 : 0)].join('\t');
+  const options = ['#mod', 'alwaysNight=' + (alwaysNight ? 1 : 0), 'skyFlash=' + (flashOn ? 1 : 0), 'sandstorm=' + (sandOn ? 1 : 0), 'ashstorm=' + (ashOn ? 1 : 0), 'blizzard=' + (blizzardOn ? 1 : 0), 'monsoon=' + (monsoonOn ? 1 : 0)].join('\t');
   D2RMM.writeTxt(
     'global\\excel\\d2rloader\\horror-night\\levels.tsv',
-    options + '\r\nlevel\tnormal\tnightmare_hell\tweather\ttown\tunder\tash\r\n' + lines.join('\r\n') + '\r\n'
+    options + '\r\nlevel\tnormal\tnightmare_hell\tweather\ttown\tunder\tash\tblizzard\tmonsoon\r\n' + lines.join('\r\n') + '\r\n'
   );
 }

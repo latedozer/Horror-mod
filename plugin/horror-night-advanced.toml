@@ -1,0 +1,525 @@
+# A Darker Atmosphere plugin: EVERY setting, with the fine-tuning ones.
+# This file is a reference: keep it out of the game's config folder. The plugin reads
+# horror-night.toml, which ships with the everyday
+# settings only; to use a setting from here, copy its line into horror-night.toml under the same
+# [section] heading (add the heading if it is not there). Close the game before editing.
+# In game, "List the fine-tuning settings here too" puts all of these in the I Hate TOMLs menu.
+
+[plugin]
+# Everything the plugin does, at once: storms, lightning, phantoms, whispers. false = all of it off
+# (the mod's darkness and fog are game data and stay). In game it is on a key: Options, Controls,
+# under Extensions ("A Darker Atmosphere: on / off", Ctrl + H as shipped), and "horror toggle"
+# in the console.
+enabled = true
+# The in-game settings menu (I Hate TOMLs) lists the fine-tuning settings too.
+advanced_menu = false
+
+[phantoms]
+# False monsters: they cannot be killed, their hits drain life but never kill,
+# and they vanish after a random time. Off as shipped: set to true to have them.
+enabled = false
+# Seconds between appearances (random between the two).
+min_interval = 40
+max_interval = 120
+# Seconds a phantom stays before it vanishes (random between the two).
+min_life = 4
+max_life = 10
+# Most phantoms alive at once, and most that appear together.
+max_alive = 3
+max_group = 2
+# Each hit removes this percent of your CURRENT life (1-50). It can never kill.
+drain_percent = 10
+# How far from you they appear, in game tiles.
+min_distance = 10
+max_distance = 18
+
+[haunting]
+# Now and then the phantom that appears is one of the dead wearing a townsperson's name.
+# While it is there: corpses near you get back up, and your life orb reads 1.
+# Percent of phantom appearances that are a haunting (0 = never).
+chance = 5
+# Most corpses that get back up.
+corpses = 4
+# Show 1 life on the orb during a haunting (your real life is untouched).
+false_health = true
+
+[sounds]
+# Breathing, moans, distant screams and ravens (three calls) at random moments outside town.
+enabled = true
+# Seconds between them (random between the two).
+min_interval = 70
+max_interval = 200
+# Loudness, 0-300 (100 = as recorded).
+volume = 60
+
+[weather]
+# Drive the game's own rain (Acts 1 and 3) and snow (Act 5) so it always falls outdoors.
+enabled = true
+# How heavy, 5-100.
+intensity = 100
+
+[storm]
+# Lightning flashes and thunder in the rainy outdoor areas (Acts 1 and 3).
+# Off whenever [weather] is off.
+# With the mod's blizzards, Act 5 has falling ice instead (see [blizzard]).
+enabled = true
+# Seconds between lightning strikes (random between the two).
+min_interval = 15
+max_interval = 70
+# Drop a harmless lightning bolt near you on outdoor strikes; it lights up the area.
+lightning_bolts = true
+# Which missiles.txt row to use for the bolt. -1 = the mod's own bolt.
+bolt_row = -1
+# A strike flickers several times (random between the two)...
+hits_min = 3
+hits_max = 3
+# ...and each flicker drops this many bolts around you.
+bolts_per_hit = 1
+# Farthest a bolt lands from you, in tiles.
+bolt_spread = 16
+# Nearest a normal bolt lands from you, in tiles.
+bolt_min_distance = 7
+# Lightning can strike you at all (false: bolts only land around you).
+direct_hits = true
+# Percent of strikes that land right on you.
+direct_hit_chance = 6
+# A direct hit removes a random percent of your MAXIMUM life between these two.
+# It always leaves at least 1 life.
+direct_hit_damage_min = 5
+direct_hit_damage_max = 10
+# Light up the whole scene on a strike (needs the mod's "Lightning lights the whole sky" option).
+sky_flash = true
+# Peak brightness of that flash, 0-100.
+sky_flash_strength = 100
+# Also flash the whole screen white (needs a working D2RLoader overlay; covers the UI too).
+screen_flash = false
+# Thunder loudness. 100 is full strength; up to 300 pushes it louder still.
+volume = 100
+# Also storm in the snowy Act 5 outdoor areas (only without the mod's blizzards).
+snow_areas = true
+# Muffled thunder (no flash) while underground in Acts 1 and 3.
+indoor_thunder = true
+
+[rainstorm]
+# Wind-blown rain in Act 1 (and wherever else it rains and there is no storm of its own): mist and
+# fog drift past and leaves blow by in the rain. It has no lighting of its own, so it needs nothing
+# from the mod, and lightning and thunder are as they were. Never in a town.
+enabled = true
+# Seconds of calm between spells of it (random between the two); the rain itself always falls.
+min_calm = 60
+max_calm = 240
+# Seconds it blows (random between the two).
+min_length = 45
+max_length = 120
+# Seconds it takes to build up, and to die down.
+fade = 8
+# It never stops while you are out in the rain. Set to false for it to come and go: the calm and
+# length times above are only used then.
+always = true
+# Blowing leaves and mist: 0 = none, 100 = on.
+dust = 100
+# Each of the effects below (layer1 to layer3 as shipped), switched on or off without changing
+# which it is.
+effect1 = true
+effect2 = true
+effect3 = true
+# What blows past: up to six of the game's own effects, layered. They come in one after another
+# as it builds, the last at its height. 0 = none; the same number twice stacks that effect. 1, the
+# rain, is the game's own rain on you (it is never laid out around you; leave it out and no rain
+# falls while it blows). "horror stormfx" in the console lists the numbers; "horror stormfx 1 29 24"
+# sets the layers.
+#    1 rain (on you)            11 fog (the Monastery's)        21 wind, huge (Act 4's)
+#    2 fog                      12 fog (the Rogue camp's)       22 wind ribbons (Act 4's)
+#    3 mist                     13 mist (the Rogue camp's)      23 wind, small (Act 5's)
+#    4 ground fog               14 splashes (the Rogue camp's)  24 wind, huge (Act 5's)
+#    5 low fog                  15 pond flies                   25 fog, blowing (Act 5's)
+#    6 blowing leaves           16 fog (the Cathedral's)        26 flat fog (Kurast's)
+#    7 blowing leaves, wide     17 mist (the caves')            27 leaves (Kurast's)
+#    8 blowing leaves, high     18 fog (the crypt's)            28 ground debris (the jungle's)
+#    9 blowing leaves, small    19 smoulder (Tristram's)        29 tree-top fog (the jungle's)
+#   10 leaves (the Monastery's) 20 wind, small (Act 4's)
+layer1 = 1
+layer2 = 29
+layer3 = 24
+layer4 = 0
+layer5 = 0
+layer6 = 0
+# The field: how many patches of each effect out from the one you stand in (5 = 11 by 11), the
+# sub-tiles between them, how many are created a second, and how far the field leans ahead of you
+# when you move, in percent ("horror stormfield" sets the four).
+field_radius = 5
+field_spacing = 20
+field_rate = 30
+field_lead = 50
+# Wind loudness, 0-300.
+wind_volume = 40
+# Only the wind's tones below this many Hz are heard. 0 is the whole wind, whistle and all.
+wind_low_pass = 0
+# Muffled wind underground in Act 1 while it blows.
+indoor_wind = false
+
+[sandstorm]
+# Sandstorms in the Act 2 desert: the air fills with sand-coloured fog, dust blows past and
+# the wind rises. Needs the mod's "Sandstorms in Act 2" option (with Always night on).
+enabled = true
+# Seconds of calm between storms (random between the two).
+min_calm = 60
+max_calm = 240
+# Seconds a storm blows (random between the two).
+min_length = 45
+max_length = 120
+# Seconds a storm takes to roll in, and to die down.
+fade = 8
+# How far the storm look goes at its height, 10-100.
+strength = 100
+# The storm never stops while you are in the desert. Set to false for storms that come and
+# go: the calm and storm times above are only used then.
+always = true
+# Blowing sand: 0 = none, 100 = on.
+dust = 100
+# Each of the effects below (layer1 and on), switched on or off without changing which it is.
+effect1 = true
+effect2 = true
+effect3 = true
+# What the blowing sand is made of: up to three of the game's own Act 2 sand effects, layered.
+# They come in one after another as a storm builds, the third at its height. 0 = none.
+# The same number twice stacks that effect for a thicker storm ("horror fx 5 5 5").
+# "horror fx" in the console lists the numbers; "horror fx 6 5 3" sets all three while you
+# watch a storm, so you can try them without restarting.
+#   1 haze, gusting            4 huge clouds, steady          7 sand wall, outer
+#   2 haze, scattered gusts    5 huge clouds, now and then    8 sand wall
+#   3 haze, steady             6 thin sand, steady            9 ribbons, tall
+layer1 = 6
+layer2 = 5
+layer3 = 3
+# Each effect is a patch a few tiles across that stays where it is put, so a storm lays them
+# out on a grid around you and moves the grid as you walk. How far out the grid goes, in
+# patches (1 = 3 by 3 of each effect, 2 = 5 by 5, up to 5 = 11 by 11; more costs frame rate), and the distance
+# between patches in sub-tiles (smaller is denser, larger reaches further).
+# "horror field 2 20" in the console sets both while you watch.
+field_radius = 5
+field_spacing = 17
+# Patches created per second while the field is being laid out (as a storm builds, and ahead
+# of you as you walk), 1-100. Low lets the sand creep in, high fills it in at once. A dense
+# field needs a high rate to keep up with you running: about 25 a second for every effect at
+# 7 sub-tiles apart and 3 patches out.
+# The console takes it as a third number: "horror field 2 20 8".
+field_rate = 30
+# While you move, the field leans ahead of you so that new sand has time to build up before
+# you reach it: 0 keeps it centred on you, 100 puts you at its back edge. Fourth number of
+# "horror field". If the storm thins out as you run, make the field reach further (more
+# patches out, or wider spacing) rather than only raising the rate.
+field_lead = 50
+# Wind loudness, 0-300.
+wind_volume = 70
+# Only the wind's tones below this many Hz are heard; 0 is the whole wind.
+wind_low_pass = 0
+# Muffled wind in Lut Gholein and underground while a storm blows.
+indoor_wind = true
+# Dust devils: while a storm shows, a few whirlwinds stand up around you every so often (seconds,
+# random between the two) and wander off. How many together is random between devil_min and
+# devil_max.
+devils = true
+devil_min_interval = 20
+devil_max_interval = 50
+devil_min = 4
+devil_max = 8
+# Being inside one drains this percent of your MAXIMUM life every second. It always leaves at
+# least 1 life. 0 = they never hurt.
+devil_damage = 5
+# How near and how far from you they stand up, in tiles. Never nearer than their reach (below):
+# none stands up on you.
+devil_min_distance = 6
+devil_max_distance = 18
+# Seconds a whirlwind stands, and how far from its middle it drains, in tiles.
+devil_life = 6
+devil_reach = 4
+# What the whirlwind is: a number from the list "horror devil" shows in the console.
+# "horror devil wind 2" sets it while you play, and "horror devil now" has a group stand up.
+#    1 Tornado (Druid's)    2 Twister (Druid's)    3 fire twister (Talic's)    4 Hurricane swoosh
+devil_whirlwind = 1
+# How fast a whirlwind drifts, in tenths of a tile a second: each wanders off slowly in a
+# direction of its own, and the drain goes with it. 15 is a tile and a half a second; 0 = it
+# stands where it formed. Second number of "horror devil wind": "horror devil wind 1 15".
+devil_speed = 15
+# The loudness of the gust of wind heard as a group stands up, 0-300.
+devil_volume = 100
+
+[monsoon]
+# Monsoons in Act 3 (the jungles, Kurast and Travincal): the rain closes the jungle in behind a
+# dark green-grey wall, mist lies along the ground, leaves and debris blow past, and the downpour
+# and the jungle at night are heard under the wind. Rain, lightning and thunder carry on.
+# Needs the mod's "Monsoons in Act 3" option (with Always night on).
+enabled = true
+# Seconds of calm between monsoons (random between the two). While it is calm the rain still
+# falls, as it always does in Act 3.
+min_calm = 60
+max_calm = 240
+# Seconds a monsoon blows (random between the two).
+min_length = 45
+max_length = 120
+# Seconds a monsoon takes to roll in, and to die down.
+fade = 8
+# How far the monsoon look goes at its height, 10-100.
+strength = 100
+# The monsoon never stops while you are out in Act 3. Set to false for monsoons that come and
+# go: the calm and monsoon times above are only used then.
+always = true
+# Blowing mist: 0 = none, 100 = on.
+dust = 100
+# Each of the effects below (layer1 and on), switched on or off without changing which it is.
+effect1 = true
+effect2 = true
+effect3 = true
+effect4 = true
+effect5 = true
+effect6 = true
+# What blows past: up to six of the game's own Act 3 effects, layered, like the blizzard's. They
+# come in one after another as a monsoon builds, the last at its height. 0 = none; the same number
+# twice stacks that effect. 1, the rain, is the game's own rain on you, at full strength (it is
+# never laid out around you; leave it out and no rain falls during a monsoon).
+# "horror rainfx" in the console lists the numbers; "horror rainfx 1 12 7 27" sets the layers.
+#    1 rain (on you)            8 motes                     15 fog (Travincal's)
+#    2 jungle fog               9 gnat swarm                16 flat fog (Travincal's)
+#    3 jungle haze             10 leaves (Kurast's)         17 pond flies
+#    4 ground mist             11 fog (Kurast's)            18 mist (the docks')
+#    5 ground mist, wide       12 flat fog (Kurast's)       19 ground mist (the docks')
+#    6 tree-top fog            13 gnats (Kurast's)          20 fog (the docks')
+#    7 ground debris           14 leaves (Travincal's)
+# From other acts' maps (if the game will not create one here it is passed over, and the log says so):
+#   21 wind, small (Act 4's)   26 fog, blowing (Act 5's)       31 splashes (the docks' shore)
+#   22 wind, huge (Act 4's)    27 blowing leaves (Act 1's)     32 splashes (the Rogue camp's)
+#   23 wind ribbons (Act 4's)  28 blowing leaves, wide         33 flies (Kurast's sewers)
+#   24 wind, small (Act 5's)   29 blowing leaves, high         34 mist (Kurast's sewers)
+#   25 wind, huge (Act 5's)    30 mist (Act 1's)               35 mist (the Act 3 menu's)
+layer1 = 1
+layer2 = 12
+layer3 = 7
+layer4 = 27
+layer5 = 12
+layer6 = 28
+# The field: how many patches of each effect out from the one you stand in (5 = 11 by 11), the
+# sub-tiles between them, how many are created a second, and how far the field leans ahead of you
+# when you move, in percent ("horror rainfield" sets the four).
+field_radius = 5
+field_spacing = 17
+field_rate = 30
+field_lead = 50
+# Wind loudness, 0-300.
+wind_volume = 80
+# Only the wind's tones below this many Hz are heard. 0 is the whole wind, whistle and all.
+wind_low_pass = 0
+# Muffled wind in the Kurast Docks and underground in Act 3 while a monsoon blows.
+indoor_wind = true
+# The lightning lights up the sky during a monsoon too. false: while a monsoon shows, the
+# lightning is bolts and thunder only.
+sky_flash = true
+# The downpour and the jungle at night, under the wind: volume, 0-300 (0 = none).
+rain_volume = 90
+# Now and then, out in the monsoon: something calls out in the jungle. Volume 0-300 (0 = none)
+# and the seconds between calls (random between the two).
+jungle_volume = 70
+jungle_min_interval = 8
+jungle_max_interval = 30
+
+[ashstorm]
+# Ash storms in Act 4 (the Outer Steppes to the Chaos Sanctuary): the air fills with ash and
+# ember-lit smoke, ash and embers blow past and the wind rises. Needs the mod's "Ash storms in
+# Act 4" option (with Always night on); which areas, and the storm's colours, are chosen there.
+enabled = true
+# Seconds of calm between storms (random between the two).
+min_calm = 60
+max_calm = 240
+# Seconds a storm blows (random between the two).
+min_length = 45
+max_length = 120
+# Seconds a storm takes to roll in, and to die down.
+fade = 8
+# How far the storm look goes at its height, 10-100.
+strength = 100
+# The storm never stops while you are out in Act 4. Set to false for storms that come and go:
+# the calm and storm times above are only used then.
+always = true
+# Blowing ash: 0 = none, 100 = on.
+dust = 100
+# Each of the effects below (layer1 and on), switched on or off without changing which it is.
+effect1 = true
+effect2 = true
+effect3 = true
+effect4 = true
+effect5 = true
+# What blows past: up to six of the game's own effects, layered. They come in one after
+# another as a storm builds, the last at its height. 0 = none; the same number twice stacks
+# that effect. Every layer is another field of patches, so more of them costs frame rate.
+# "horror ashfx" in the console lists the numbers; "horror ashfx 1 6 2 9 14" sets the layers
+# (as many numbers as you give, the rest become none) while you watch a storm.
+#    1 wind, small              7 ash and embers, high      13 steam, wide
+#    2 wind, huge               8 ash and embers, long      14 smoke column
+#    3 wind ribbons             9 fog                       15 smoke column, wide
+#    4 ash and embers, small   10 haze                      16 falling rocks
+#    5 ash and embers          11 haze, wide                17 lava glow
+#    6 ash and embers, wide    12 steam                     18 embers (Travincal's)
+layer1 = 6
+layer2 = 9
+layer3 = 11
+layer4 = 17
+layer5 = 14
+layer6 = 0
+# The field of those effects around you: how far out it goes, in patches (1 = 3 by 3 of each
+# effect, up to 5 = 11 by 11; more costs frame rate), and the distance between patches in
+# sub-tiles. "horror ashfield 3 20" in the console sets both while you watch.
+field_radius = 5
+field_spacing = 20
+# Patches created per second while the field is being laid out, 1-100 (third number of
+# "horror ashfield").
+field_rate = 30
+# While you move, the field leans ahead of you: 0 keeps it centred on you, 100 puts you at its
+# back edge (fourth number of "horror ashfield").
+field_lead = 50
+# Wind loudness, 0-300.
+wind_volume = 190
+# Only the wind's tones below this many Hz are heard: here the wind is all bass, a deep roar
+# without the whistling. 0 is the whole wind, as in the desert.
+wind_low_pass = 100
+# Muffled wind (and fire) in the Pandemonium Fortress while a storm blows.
+indoor_wind = true
+# The fire under the storm, a low roar and crackling embers: its volume, 0-300 (0 = none).
+fire_volume = 70
+# Now and then, out in the storm: a vent of steam, rock coming down. Volume 0-300 (0 = none)
+# and the seconds between them (random between the two).
+burst_volume = 70
+burst_min_interval = 10
+burst_max_interval = 40
+# Meteors: burning rocks fall from the sky while a storm shows. They are the game's own Meteor
+# with everything that hurts left out. "horror meteor" in the console drops a volley now.
+meteors = true
+# Seconds between volleys (random between the two), and how many meteors a volley has.
+meteor_min_interval = 40
+meteor_max_interval = 80
+meteors_min = 50
+meteors_max = 50
+# Milliseconds from one meteor of a volley to the next (random between the two). The game
+# counts in steps of 40 ms; 0 lets the whole volley fall together.
+meteor_gap_min = 40
+meteor_gap_max = 240
+# How near and how far from you they land, in tiles.
+meteor_min_distance = 3
+meteor_max_distance = 22
+# One meteor of a volley can be aimed at you. The Meteor's red marker shows on the ground
+# where you stand, and you have about two seconds to step out of it before it lands. If you
+# are still in it, it burns a share of your MAXIMUM life (it never kills: at least 1 life is
+# left). Chance is the percent of volleys that have an aimed meteor. false = meteors never hurt.
+meteor_hits = true
+meteor_hit_chance = 6
+meteor_hit_damage_min = 5
+meteor_hit_damage_max = 10
+
+[blizzard]
+# Blizzards in Act 5 (the Bloody Foothills to the Arreat Summit): snow closes in until the
+# distance is a pale grey wall, drifts blow along the ground, the light turns cold and the wind
+# howls off the mountain. In Act 5 they take the place of the lightning: ice falls instead.
+# Needs the mod's "Blizzards in Act 5" option (with Always night on).
+enabled = true
+# Seconds of calm between blizzards (random between the two). While it is calm the snow still
+# falls, as it always does in Act 5.
+min_calm = 60
+max_calm = 240
+# Seconds a blizzard blows (random between the two).
+min_length = 45
+max_length = 120
+# Seconds a blizzard takes to roll in, and to die down.
+fade = 8
+# How far the blizzard look goes at its height, 10-100.
+strength = 100
+# The blizzard never stops while you are out in Act 5. Set to false for blizzards that come
+# and go: the calm and blizzard times above are only used then.
+always = true
+# Blowing snow: 0 = none, 100 = on.
+dust = 100
+# Each of the effects below (layer1 and on), switched on or off without changing which it is.
+effect1 = true
+effect2 = true
+effect3 = true
+effect4 = true
+effect5 = true
+effect6 = true
+# What blows past: up to six of the game's own effects, layered, like the ash storm's. They come
+# in one after another as a blizzard builds, the last at its height. 0 = none; the same number
+# twice stacks that effect. 1, the snow, is the game's own snowfall on you, at full strength (it
+# is never laid out around you; leave it out and no snow falls during a blizzard).
+# "horror snowfx" in the console lists the numbers; "horror snowfx 1 10 5 9" sets the layers.
+#    1 snow (on you)            7 haze                      13 wind ribbons (the summit's)
+#    2 wind, small              8 ground haze               14 drifting snow (the summit's)
+#    3 wind, huge               9 ground haze, dense        15 haze (the summit's)
+#    4 wind ribbons            10 drifting snow             16 mist (the ice caves')
+#    5 fog, blowing            11 drifting snow, small      17 fog (the ice caves')
+#    6 fog                     12 cliff ribbons (summit's)  18 clouds (the Act 5 menu's)
+layer1 = 1
+layer2 = 10
+layer3 = 5
+layer4 = 9
+layer5 = 17
+layer6 = 11
+# The field of those effects around you: how far out it goes, in patches (1 = 3 by 3 of each
+# effect, up to 5 = 11 by 11; more costs frame rate), and the distance between patches in
+# sub-tiles. "horror snowfield 3 20" in the console sets both while you watch.
+field_radius = 5
+field_spacing = 20
+# Patches created per second while the field is being laid out, 1-100 (third number of
+# "horror snowfield").
+field_rate = 30
+# While you move, the field leans ahead of you: 0 keeps it centred on you, 100 puts you at its
+# back edge (fourth number of "horror snowfield").
+field_lead = 50
+# Wind loudness, 0-300.
+wind_volume = 120
+# Only the wind's tones below this many Hz are heard. 0 is the whole wind, whistle and all.
+wind_low_pass = 0
+# Muffled wind in Harrogath and underground in Act 5 while a blizzard blows.
+indoor_wind = true
+# The mountain wind howling under the gusts: its volume, 0-300 (0 = none).
+howl_volume = 70
+# Now and then, out in the blizzard: a hard gust off the mountain. Volume 0-300 (0 = none) and
+# the seconds between them (random between the two).
+gust_volume = 80
+gust_min_interval = 8
+gust_max_interval = 30
+# Ice: shards fall from the sky while a blizzard shows, in place of the lightning. They fall the
+# way the Meteor does and shatter where they land, with everything that hurts left out.
+# "horror ice" in the console drops a volley now.
+ice = true
+# Seconds between volleys (random between the two), and how many shards a volley has.
+ice_min_interval = 20
+ice_max_interval = 60
+ice_min = 60
+ice_max = 60
+# Milliseconds from one shard of a volley to the next (random between the two). The game counts
+# in steps of 40 ms; 0 lets the whole volley fall together.
+ice_gap_min = 80
+ice_gap_max = 400
+# How near and how far from you they land, in tiles.
+ice_min_distance = 3
+ice_max_distance = 20
+# One shard of a volley can be aimed at you. Its marker shows on the ground where you stand, and
+# you have about two seconds to step out of it before it lands. If you are still in it, it takes
+# a share of your MAXIMUM life (it never kills: at least 1 life is left). Chance is the percent of
+# volleys that have an aimed shard. false = the ice never hurts.
+ice_hits = true
+ice_hit_chance = 8
+ice_hit_damage_min = 5
+ice_hit_damage_max = 10
+# What shows where a shard lands: numbers from the list that "horror impact" shows in the console
+# (the game's own ice effects; 1 is the impact of the Sorceress' Blizzard), 0 = nothing. The second
+# plays on top of the first. "horror impact show 3" plays one in front of you.
+ice_impact = 1
+ice_impact_2 = 0
+# What shows on the ground where an aimed shard will land, until it lands: a number from the same
+# list (11 is cracking ice). 0 = none, for when the D2RMM mod is set to show the Meteor's circle.
+ice_marker = 11
+# Its size in percent of the effect's own, and its head start: how many milliseconds it is up before
+# the shard is dropped (that much more time to step out; the fall itself takes about 2.4 seconds).
+ice_marker_size = 200
+ice_marker_lead = 800
+# Most of the effects play once and fade, so the marker is played again this often (milliseconds)
+# until the shard lands. 0 = put up once and kept until then, for an effect that does not fade.
+ice_marker_repeat = 500

@@ -49,42 +49,68 @@ int Lines(const char* text) {
 
 void TestConfig(const char* tomlPath) {
 	printf("-- config\n");
-	static char shipped[32768];
-	FILE*       file = fopen(tomlPath, "rb");
-	const size_t size = file != nullptr ? fread(shipped, 1, sizeof(shipped) - 1, file) : 0;
-	if (file != nullptr) {
-		fclose(file);
+	// two files ship: the short one the plugin reads (everyday settings), and the reference with
+	// every setting, which sits beside it under the name ...-advanced.toml
+	static char shipped[65536];
+	static char reference[65536];
+	char        referencePath[1024];
+	snprintf(referencePath, sizeof(referencePath), "%s", tomlPath);
+	if (char* dot = strrchr(referencePath, '.'); dot != nullptr && strlen(referencePath) + 10 < sizeof(referencePath)) {
+		snprintf(dot, sizeof(referencePath) - static_cast<size_t>(dot - referencePath), "-advanced.toml");
 	}
-	shipped[size] = '\0';
-	Check(size > 0, "the shipped horror-night.toml can be read");
+	const auto read = [](const char* path, char* into, size_t room) {
+		FILE*        file = fopen(path, "rb");
+		const size_t size = file != nullptr ? fread(into, 1, room - 1, file) : 0;
+		if (file != nullptr) {
+			fclose(file);
+		}
+		into[size] = '\0';
+		return size;
+	};
+	Check(read(tomlPath, shipped, sizeof(shipped)) > 0 && read(referencePath, reference, sizeof(reference)) > 0, "the shipped horror-night.toml and horror-night-advanced.toml can be read");
 
-	// every setting has its line in the shipped file: rewriting it adds no line
-	static char result[40000];
-	bool        allPresent = true;
+	// rewriting a setting that has its line in a file adds no line to it
+	static char result[80000];
+	const auto  has = [&](const char* text, const Setting& setting) {
+		RewriteConfig(text, setting.section, setting.key, "1", result, sizeof(result));
+		return Lines(result) == Lines(text);
+	};
+	bool allInReference = true;
+	bool shortIsRight   = true;
+	int  everyday       = 0;
 	for (const Setting& setting : kSettings) {
 		if (setting.section == nullptr) {
 			continue;
 		}
-		RewriteConfig(shipped, setting.section, setting.key, "1", result, sizeof(result));
-		if (Lines(result) != Lines(shipped)) {
-			allPresent = false;
-			printf("      missing from the shipped file: [%s] %s\n", setting.section, setting.key);
+		if (!has(reference, setting)) {
+			allInReference = false;
+			printf("      missing from the reference file: [%s] %s\n", setting.section, setting.key);
+		}
+		const bool advanced = IsAdvancedKey(setting.key);
+		everyday += advanced ? 0 : 1;
+		if (has(shipped, setting) == advanced) {
+			shortIsRight = false;
+			printf("      %s the short file: [%s] %s\n", advanced ? "a fine-tuning setting is in" : "missing from", setting.section, setting.key);
 		}
 	}
-	Check(allPresent, "every setting is in the shipped horror-night.toml");
+	Check(allInReference, "every setting is in horror-night-advanced.toml");
+	Check(shortIsRight && everyday > 80 && everyday < 130, "the short horror-night.toml has every everyday setting and none of the fine-tuning ones");
+	Check(Lines(shipped) < Lines(reference) / 2, "...and is less than half as long");
 
-	// ...and the shipped values are the built-in defaults
-	static char copy[32768];
-	memcpy(copy, shipped, sizeof(copy));
-	g_config = Config {};
-	for (const Setting& setting : kSettings) {
-		if (setting.target != nullptr) {
-			*setting.target = setting.isBool ? 1 - *setting.target : setting.min; // anything but the default
-		}
-	}
-	ParseConfig(copy);
+	// ...and the shipped values are the built-in defaults, in both
 	const Config defaults {};
-	Check(memcmp(&g_config, &defaults, sizeof(Config)) == 0, "the shipped file holds the built-in defaults");
+	static char  copy[65536];
+	for (int which = 0; which < 2; ++which) {
+		memcpy(copy, which == 0 ? reference : shipped, sizeof(copy));
+		g_config = Config {};
+		for (const Setting& setting : kSettings) {
+			if (setting.target != nullptr && (which == 0 || !IsAdvancedKey(setting.key))) {
+				*setting.target = setting.isBool ? 1 - *setting.target : setting.min; // anything but the default
+			}
+		}
+		ParseConfig(copy);
+		Check(memcmp(&g_config, &defaults, sizeof(Config)) == 0, which == 0 ? "the reference file holds the built-in defaults" : "the short file holds the built-in defaults");
+	}
 
 	char text[] = "[phantoms]\nenabled = false\nmin_interval = 99999\nmax_interval = 7\nold_setting = 3\n\n[sandstorm]\n  fade=0 # too short\nalways = true\n[nonsense]\nfade = 30\n";
 	g_config                 = Config {};
@@ -153,6 +179,21 @@ void TestLevels() {
 	Check(ParseLevels(sandOnly) == 2 && g_modAshstorm.load() == 0 && LevelFall(104) == kFallNone && LevelFall(41) == kFallSand, "a levels.tsv from before the ash storm: no ash anywhere");
 	char ashOnly[] = "#mod\talwaysNight=1\tskyFlash=0\tsandstorm=0\tashstorm=1\r\n104\t\t\t0\t0\t0\t1\r\n";
 	Check(ParseLevels(ashOnly) == 1 && g_modAshstorm.load() == 1 && g_modSandstorm.load() == 0, "the two storms are announced separately");
+
+	// the blizzard's own column, after the ash storm's
+	char blizzardTable[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\r\nlevel\tnormal\tnightmare_hell\tweather\ttown\tunder\tash\tblizzard\r\n"
+		"2\t\t\t1\t0\t0\t0\t0\r\n104\t\t\t0\t0\t0\t1\t0\r\n109\t\t\t2\t1\t0\t0\t2\r\n110\t\t\t2\t0\t0\t0\t1\r\n113\t\t\t0\t0\t2\t0\t2\r\n120\t\t\t2\t0\t0\t0\t1\r\n";
+	Check(ParseLevels(blizzardTable) == 6 && g_modBlizzard.load() == 1 && g_modAshstorm.load() == 1, "a levels.tsv with the blizzard column is read, the blizzard announced");
+	Check(LevelFall(110) == kFallBlizzard && LevelFall(120) == kFallBlizzard && LevelUnder(110) == kFallNone, "...the blizzard blows on the marked snowfields");
+	Check(LevelFall(109) == kFallSnow && LevelUnder(109) == kFallBlizzard && IsTown(109), "...Harrogath keeps its snow and is sheltered from the blizzard");
+	Check(LevelFall(113) == kFallNone && LevelUnder(113) == kFallBlizzard, "...and underground in Act 5 it is overhead instead of the snow");
+	Check(LevelFall(2) == kFallRain && LevelFall(104) == kFallAsh, "...the other columns read as before");
+	g_config = Config {};
+	Check(StormArea(110) == Area::None && StormArea(109) == Area::None && StormArea(113) == Area::None, "no lightning or thunder anywhere in Act 5 with the blizzard: the ice takes its place");
+	Check(StormArea(2) == Area::Outdoor, "...the rain of Act 1 still has its lightning");
+	char beforeBlizzard[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\r\n109\t\t\t2\t1\t0\t0\r\n110\t\t\t2\t0\t0\t0\r\n113\t\t\t0\t0\t2\t0\r\n";
+	Check(ParseLevels(beforeBlizzard) == 3 && g_modBlizzard.load() == 0 && LevelFall(110) == kFallSnow && StormArea(110) == Area::Outdoor && StormArea(113) == Area::Indoor,
+		"a levels.tsv from before the blizzard: Act 5 has its snow and its lightning as before");
 
 	// more monsters than a level can hold
 	static char many[2048];
@@ -520,6 +561,52 @@ void TestSky() {
 	UpdateSky(now + 60000, true, 0.0f);
 	Check(g_eventYield.load() == 0.0f, "...and not at all once it is gone");
 
+	// Act 3 with the mod's monsoons: four looks in a row (flash, night, monsoon, lit monsoon), so
+	// that the lightning stays - and everywhere else the blend is the one it always was
+	{
+		char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\tmonsoon=1\r\n2\t\t\t1\t0\t0\t0\t0\t0\r\n75\t\t\t1\t1\t0\t0\t0\t2\r\n"
+			"76\t\t\t1\t0\t0\t0\t0\t1\r\n84\t\t\t0\t0\t1\t0\t0\t2\r\n";
+		ParseLevels(table);
+		g_config = Config {};
+		g_level  = 76;
+		UpdateSky(now + 70000, true, 0.0f);
+		Check(held() && stage() == 5 && blend() == 0.0f, "Act 3, calm: held on night");
+		UpdateSky(now + 70000, true, 0.6f);
+		Check(stage() == 1 && Near(blend(), 0.6f) && Near(g_eventYield.load(), 0.6f), "a monsoon rolling in: from the night toward the monsoon look (stage 1)");
+		StartSkyFlash(now + 80000);
+		UpdateSky(now + 80010, true, 1.0f);
+		Check(stage() == 2 && blend() == 1.0f, "lightning inside a monsoon: from the monsoon toward its lit look (stage 2)");
+		UpdateSky(now + 80010, true, 0.2f);
+		Check(stage() == 0 && blend() == 0.0f, "lightning with hardly any monsoon: the flash look itself (stage 0, nothing of the night blended in)");
+		UpdateSky(now + 80010, true, 0.0f);
+		Check(stage() == 0 && blend() == 0.0f, "...and with none at all");
+		g_config.monsoonFlash = 0;
+		UpdateSky(now + 80010, true, 1.0f);
+		Check(stage() == 1 && blend() == 1.0f, "sky flash in a monsoon switched off: the monsoon look stays as it is");
+		UpdateSky(now + 80010, true, 0.0f);
+		Check(stage() == 0, "...the flash outside a monsoon is still there");
+		g_config.monsoonFlash = 1;
+		g_level               = 75;
+		UpdateSky(now + 80010, true, 0.0f);
+		Check(stage() == 0 && MonsoonSky(75) && !MonsoonSky(84) && !MonsoonSky(2), "the Kurast Docks have the same lighting: the flash is found there too");
+		g_level = 2;
+		UpdateSky(now + 80010, true, 0.0f);
+		Check(stage() == 1 && blend() == 1.0f, "in Act 1 the flash is where it always was (stage 1)");
+		g_level = 76;
+		g_skyTestStage = 3;
+		g_skyTestBlend = 0.25f;
+		g_skyTestUntil = now + 90000;
+		UpdateSky(now + 85000, true, 0.0f);
+		Check(stage() == 3 && Near(blend(), 0.25f), "horror sky: the asked-for stage and blend are held");
+		g_skyTestUntil = 0;
+		g_modMonsoon   = 0;
+		StartSkyFlash(now + 95000);
+		UpdateSky(now + 95010, true, 0.0f);
+		Check(stage() == 1 && blend() == 1.0f, "a mod without monsoons: Act 3's flash is where it always was");
+		g_level = -1;
+		UpdateSky(now + 200000, true, 0.0f);
+	}
+
 	gameClock();
 	UpdateSky(now, false, 0.0f);
 	Check(!held() && stage() == 2 && g_eventYield.load() == 0.0f, "out of the game: the clock is given back");
@@ -775,6 +862,204 @@ void TestAshStorm() {
 	Check(!ash.active && ash.level == 0.0f && layers(105, &which) == -1, "ash storms switched off: none");
 	run(-1, 1);
 	Check(!Sand().active && !ash.active, "leaving the game ends both");
+	g_config   = Clocked();
+	g_skyReady = false;
+}
+
+// the Act 5 blizzard: a storm kind like the other two, with Harrogath sheltered
+void TestBlizzard() {
+	printf("-- blizzard\n");
+	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\r\n2\t\t\t1\t0\t0\t0\t0\r\n105\t\t\t0\t0\t0\t1\t0\r\n"
+		"109\t\t\t2\t1\t0\t0\t2\r\n110\t\t\t2\t0\t0\t0\t1\r\n113\t\t\t0\t0\t2\t0\t2\r\n";
+	ParseLevels(table);
+	g_config                 = Clocked();
+	g_config.blizzard.always = 0;
+	g_skyReady               = true;
+	StormState& blizzard     = g_storms[kStormBlizzard].state;
+	uint64_t    now          = 7000000;
+	const auto  run          = [&](int level, int seconds10) {
+		for (int i = 0; i < seconds10; ++i) {
+			now += 100;
+			UpdateStorms(now, level);
+		}
+	};
+	StormKind* which = nullptr;
+
+	g_modBlizzard  = 0;
+	blizzard.force = true;
+	run(110, 20);
+	Check(!blizzard.active && blizzard.level == 0.0f && StormLayers(110, &which) == -1, "no blizzard look installed by the mod: nothing happens, even when asked");
+	g_modBlizzard  = 1;
+	blizzard.force = false;
+
+	run(110, 10);
+	Check(!blizzard.active && StormLayers(110, &which) == 0 && which == &g_storms[kStormBlizzard], "on Act 5's snowfields it starts calm, the first blizzard on the clock");
+	Check(g_storms[kStormBlizzard].layers == 6 && kSnowEffectCount > 15 && OnYouOnly(kSnowEffects[1]) && !OnYouOnly(kSnowEffects[2]), "it has six layers, and its first effect is the game's snow, which only falls on you");
+	blizzard.force = true;
+	run(110, 85);
+	Check(blizzard.active && blizzard.level == 1.0f && StormLayers(110, &which) == 6 && StormBlend() == 1.0f && Near(blizzard.wind, 1.0f), "a blizzard rolls in to full strength: all six layers, the look, the wind");
+	Check(Sand().level == 0.0f && g_storms[kStormAsh].state.level == 0.0f, "...and neither of the other storms shows in Act 5");
+	run(109, 150);
+	Check(blizzard.level == 0.0f && Near(blizzard.wind, 0.3f) && StormLayers(109, &which) == -1, "in Harrogath the blizzard clears and its wind is heard muffled");
+	run(113, 150);
+	Check(blizzard.level == 0.0f && Near(blizzard.wind, 0.3f), "...underground too");
+	run(105, 150);
+	Check(blizzard.level == 0.0f && blizzard.wind == 0.0f && blizzard.active, "in Act 4 nothing of it is seen or heard, while it goes on by its clock");
+	run(110, 150);
+	Check(blizzard.level == 1.0f, "back out on the snowfields it blows again");
+	g_config.blizzard.enabled = 0;
+	run(110, 1);
+	Check(!blizzard.active && blizzard.level == 0.0f && StormLayers(110, &which) == -1, "blizzards switched off: none");
+	run(-1, 1);
+	g_config   = Clocked();
+	g_skyReady = false;
+}
+
+void TestRainstorm() {
+	printf("-- wind-blown rain (Act 1)\n");
+	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\tmonsoon=1\r\n1\t\t\t1\t1\t0\t0\t0\t0\r\n2\t\t\t1\t0\t0\t0\t0\t0\r\n"
+		"8\t\t\t0\t0\t1\t0\t0\t0\r\n76\t\t\t1\t0\t0\t0\t0\t1\r\n110\t\t\t2\t0\t0\t0\t1\t0\r\n";
+	ParseLevels(table);
+	g_config                  = Clocked();
+	g_config.rainstorm.always = 0;
+	g_config.monsoon.always   = 0;
+	g_skyReady                = true;
+	StormState& rain          = g_storms[kStormRain].state;
+	uint64_t    now           = 11000000;
+	const auto  run           = [&](int level, int seconds10) {
+		for (int i = 0; i < seconds10; ++i) {
+			now += 100;
+			UpdateStorms(now, level);
+		}
+	};
+	StormKind* which = nullptr;
+
+	run(2, 10);
+	Check(!rain.active && StormLayers(2, &which) == 0 && which == &g_storms[kStormRain], "out in the rain of Act 1 it starts calm, on its own clock");
+	Check(g_storms[kStormRain].noLook && g_storms[kStormRain].layers == 6 && kRainstormEffectCount == 30 && OnYouOnly(kRainstormEffects[1]) && !OnYouOnly(kRainstormEffects[2]),
+		"it has six layers out of twenty-nine effects, the first the game's rain, which only falls on you");
+	rain.force = true;
+	run(2, 85);
+	Check(rain.active && rain.level == 1.0f && StormLayers(2, &which) == 3 && which == &g_storms[kStormRain] && Near(rain.wind, 1.0f), "it builds to its height: all its layers (three as shipped) and its wind");
+	Check(StormBlend() == 0.0f, "...and it changes nothing about the lighting: that is the lightning's");
+	g_modMonsoon = 0;
+	g_modSkyFlash = 0;
+	Check(StormLayers(2, &which) == 3, "it needs nothing from the mod");
+	g_modMonsoon  = 1;
+	g_modSkyFlash = 1;
+	run(1, 150);
+	Check(rain.level == 0.0f && StormLayers(1, &which) == -1 && rain.wind == 0.0f, "not in the Rogue Encampment, though it rains there: no field, no wind");
+	run(8, 150);
+	Check(rain.level == 0.0f && rain.wind == 0.0f && StormLayers(8, &which) == -1, "nothing of it underground (muffled wind there is off as shipped)");
+	g_config.rainstorm.indoorWind = 1;
+	run(8, 150);
+	Check(Near(rain.wind, 0.3f), "...switched on, its wind is heard muffled in the caves");
+	run(76, 150);
+	Check(rain.level == 0.0f && StormLayers(76, &which) != 6 - 100 && which == &g_storms[kStormMonsoon], "in Act 3 with the mod's monsoons the monsoon has the jungle, not this");
+	run(110, 50);
+	Check(rain.level == 0.0f && which != &g_storms[kStormRain], "and it is nowhere in Act 5");
+	run(2, 150);
+	Check(rain.level == 1.0f, "back out in the rain of Act 1 it blows again");
+	g_config.rainstorm.enabled = 0;
+	run(2, 1);
+	Check(!rain.active && rain.level == 0.0f && StormLayers(2, &which) == -1, "switched off: none");
+	run(-1, 1);
+	g_config   = Clocked();
+	g_skyReady = false;
+}
+
+void TestSettingsMenu() {
+	printf("-- settings menu\n");
+	const auto rows = [] {
+		int count = 0;
+		for (const char* at = g_menuText; (at = strstr(at, "[[setting]]")) != nullptr; ++at) {
+			++count;
+		}
+		return count;
+	};
+	int labelled = 0, everyday = 0;
+	for (const Setting& setting : kSettings) {
+		labelled += setting.label != nullptr ? 1 : 0;
+		everyday += setting.label != nullptr && (setting.key == nullptr || !IsAdvancedKey(setting.key)) ? 1 : 0;
+	}
+	g_config = Config {};
+	bool whole = BuildMenuText();
+	Check(whole && rows() == everyday && everyday < labelled - 40, "as shipped the menu lists the everyday settings only");
+	Check(strstr(g_menuText, "key = \"plugin_enabled\"") != nullptr && strstr(g_menuText, "key = \"monsoon_effect6\"") != nullptr && strstr(g_menuText, "key = \"blizzard_ice_hits\"") != nullptr
+		&& strstr(g_menuText, "key = \"monsoon_layer6\"") == nullptr && strstr(g_menuText, "key = \"blizzard_ice_marker_repeat\"") == nullptr,
+		"...the plugin's switch and the effect toggles are in it, the effect numbers and the marker's timings are not");
+	g_config.advancedMenu = 1;
+	whole                 = BuildMenuText();
+	Check(whole && strlen(g_menuText) < sizeof(g_menuText) / 2 && rows() == labelled && rows() > 190, "asked for, it lists every setting, and the list fits its buffer with as much room again");
+	Check(strstr(g_menuText, "key = \"monsoon_layer6\"") != nullptr && strstr(g_menuText, "key = \"blizzard_ice_marker_repeat\"") != nullptr, "...the fine-tuning ones too");
+	g_config = Config {};
+}
+
+void TestMonsoon() {
+	printf("-- monsoon\n");
+	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\tmonsoon=1\r\n2\t\t\t1\t0\t0\t0\t0\t0\r\n75\t\t\t1\t1\t0\t0\t0\t2\r\n"
+		"76\t\t\t1\t0\t0\t0\t0\t1\r\n84\t\t\t0\t0\t1\t0\t0\t2\r\n110\t\t\t2\t0\t0\t0\t1\t0\r\n";
+	ParseLevels(table);
+	g_config                = Clocked();
+	g_config.monsoon.always = 0;
+	g_skyReady              = true;
+	StormState& monsoon     = g_storms[kStormMonsoon].state;
+	uint64_t    now         = 9000000;
+	const auto  run         = [&](int level, int seconds10) {
+		for (int i = 0; i < seconds10; ++i) {
+			now += 100;
+			UpdateStorms(now, level);
+		}
+	};
+	StormKind* which = nullptr;
+
+	Check(g_modMonsoon.load() == 1 && LevelFall(76) == kFallMonsoon && LevelFall(75) == kFallRain && LevelUnder(75) == kFallMonsoon && LevelUnder(84) == kFallMonsoon
+		&& LevelFall(2) == kFallRain && LevelFall(110) == kFallBlizzard, "a levels.tsv with the monsoon column is read: it blows in the jungle, the docks and the caves shelter");
+	Check(StormArea(76) == Area::Outdoor && StormArea(75) == Area::Outdoor && StormArea(84) == Area::Indoor && StormArea(110) == Area::None,
+		"lightning and thunder carry on in Act 3: outdoors in the jungle and the docks, muffled underground");
+	run(76, 10);
+	Check(!monsoon.active && StormLayers(76, &which) == 0 && which == &g_storms[kStormMonsoon], "in the jungle it starts calm, the first monsoon on the clock");
+	Check(g_storms[kStormMonsoon].layers == 6 && kMonsoonEffectCount == 36 && OnYouOnly(kMonsoonEffects[1]) && !OnYouOnly(kMonsoonEffects[2]),
+		"it has six layers, and its first effect is the game's rain, which only falls on you");
+	monsoon.force = true;
+	run(76, 85);
+	Check(monsoon.active && monsoon.level == 1.0f && StormLayers(76, &which) == 6 && StormBlend() == 1.0f && Near(monsoon.wind, 1.0f), "a monsoon rolls in to full strength: all six layers, the look, the wind");
+	Check(Sand().level == 0.0f && g_storms[kStormAsh].state.level == 0.0f && g_storms[kStormBlizzard].state.level == 0.0f, "...and none of the other storms shows in Act 3");
+	run(75, 150);
+	Check(monsoon.level == 0.0f && Near(monsoon.wind, 0.3f) && StormLayers(75, &which) == -1, "in the Kurast Docks the monsoon clears and its wind is heard muffled");
+	run(84, 150);
+	Check(monsoon.level == 0.0f && Near(monsoon.wind, 0.3f), "...underground too");
+	run(2, 150);
+	Check(monsoon.level == 0.0f && monsoon.wind == 0.0f && monsoon.active, "in Act 1 nothing of it is seen or heard, while it goes on by its clock");
+	run(76, 150);
+	Check(monsoon.level == 1.0f, "back in the jungle it blows again");
+	{
+		// each effect has a switch of its own: off, its layer is left out, which effect it is stays as it was
+		int wanted[kMaxLayers];
+		const bool savedReady = g_fieldReady;
+		g_fieldReady          = true;
+		Check(WantedEffects(&g_storms[kStormMonsoon], 6, wanted) == 6 && wanted[1] == g_config.monsoon.layer[1], "all six effects are wanted at the height of the monsoon");
+		g_config.monsoon.layerOn[1] = 0;
+		g_config.monsoon.layerOn[4] = 0;
+		Check(WantedEffects(&g_storms[kStormMonsoon], 6, wanted) == 4 && wanted[1] == 0 && wanted[4] == 0 && wanted[2] == g_config.monsoon.layer[2] && g_config.monsoon.layer[1] == 12,
+			"two effects switched off: four are wanted, and the two keep their numbers for when they are switched back on");
+		for (int& on : g_config.monsoon.layerOn) {
+			on = 0;
+		}
+		Check(StormLayers(76, &which) == -1, "every effect switched off: no field at all");
+		for (int& on : g_config.monsoon.layerOn) {
+			on = 1;
+		}
+		g_fieldReady = savedReady;
+	}
+	g_modMonsoon = 0;
+	run(76, 20);
+	Check(monsoon.level == 0.0f && StormLayers(76, &which) == -1, "no monsoon look installed by the mod: nothing shows");
+	g_modMonsoon             = 1;
+	g_config.monsoon.enabled = 0;
+	run(76, 1);
+	Check(!monsoon.active && monsoon.level == 0.0f && StormLayers(76, &which) == -1, "monsoons switched off: none");
+	run(-1, 1);
 	g_config   = Clocked();
 	g_skyReady = false;
 }
@@ -1382,6 +1667,45 @@ void TestWeather() {
 		settle(-1, -1);
 	}
 
+	// the blizzard: the game's snow falls between blizzards, and is the marker during one; the
+	// snow is never laid out around the player, the blowing effects are
+	{
+		char blizzardLevels[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\r\n2\t\t\t1\t0\t0\t0\t0\r\n41\t\t\t3\t0\t0\t0\t0\r\n"
+			"109\t\t\t2\t1\t0\t0\t2\r\n110\t\t\t2\t0\t0\t0\t1\r\n";
+		ParseLevels(blizzardLevels);
+		g_config.weatherIntensity       = 50;
+		g_config.blizzard.fieldRadius   = 1;
+		g_config.blizzard.fieldSpacing  = 20;
+		g_config.blizzard.fieldLead     = 0;
+		const int lay[kMaxLayers]       = { 1, 5, 2, 0, 0, 0 };
+		memcpy(g_config.blizzard.layer, lay, sizeof(lay));
+		const auto at = [&](int level, StormKind* storm, int count) {
+			for (int i = 0; i < 12; ++i) {
+				now += 1000;
+				UpdateWeather(now, level, storm, count);
+				g_fake.RunJob();
+				g_fake.RunQueue();
+			}
+		};
+		const auto snowing = [&] { return g_weatherOn && g_fake.Alive(g_fake.Handle()) && strcmp(g_fake.Effect(g_fake.Handle()).path, snowPath) == 0; };
+		StormKind* const storm = &g_storms[kStormBlizzard];
+		at(110, storm, 0);
+		Check(snowing() && Near(g_fake.lastIntensity, 0.5f) && g_patchesUp.load() == 0, "a calm on Act 5's snowfields: the snow falls as always (at the weather's own strength), nothing laid out");
+		at(110, storm, 1);
+			Check(snowing() && g_fake.lastIntensity == 1.0f && g_patchesUp.load() == 0 && g_fake.AliveCount(snowPath) == 0,
+			"a blizzard begins: its first layer is the snow on you (the marker), at full strength, never laid out around you");
+		at(110, storm, 3);
+		Check(snowing() && g_fake.AliveCount(kSnowEffects[5].path) == 9 && g_fake.AliveCount(kSnowEffects[2].path) == 9 && g_fake.AliveCount(snowPath) == 0 && g_patchesUp.load() == 18,
+			"at its height: the blowing effects laid out, 3 by 3 each, and still only the one snow");
+		at(109, nullptr, -1);
+		Check(snowing() && g_patchesUp.load() == 0 && Near(g_fake.lastIntensity, 0.5f), "into Harrogath: the field goes, and its snow falls as always");
+		g_config.weatherEnabled = 0;
+		at(110, storm, 0);
+		Check(!g_weatherOn, "the weather switched off: no snow between blizzards");
+		g_config = Still();
+		settle(-1, -1);
+	}
+
 	// "horror probe": one effect of the list made the weather's marker for a few seconds
 	{
 		const auto named = [](const char* name) {
@@ -1596,6 +1920,20 @@ void TestServerBolts() {
 	const int idle = g_server.iterations;
 	run(60 * 25 + 50);
 	Check(g_server.iterations == idle, "phantoms switched off in the plugin: once the spawn time has passed the tick still does nothing");
+	// the whole plugin switched off (its setting, its key): phantoms switched on are not spawned either
+	g_config.phantomsEnabled = 1;
+	g_config.pluginEnabled   = 0;
+	g_game                   = nullptr;
+	run(1);
+	const int off = g_server.iterations;
+	run(60 * 25 + 50);
+	Check(g_server.iterations == off && g_aliveCount.load() == 0, "the plugin switched off: no phantoms, and the tick stays on its short path");
+	g_config.pluginEnabled = 1;
+	TogglePlugin();
+	const bool wentOff = g_config.pluginEnabled == 0;
+	TogglePlugin();
+	Check(wentOff && g_config.pluginEnabled == 1, "the on/off key switches it off and on again");
+	g_config.phantomsEnabled = 0;
 	g_config.phantomsEnabled = 1;
 	g_diabloDead             = true;
 	run(50);
@@ -1635,6 +1973,7 @@ void TestStormSounds() {
 	const auto wind = [] { return g_beds[kBedWind].gain.load(); };
 	const auto fire = [] { return g_beds[kBedFire].gain.load(); };
 
+	g_config.rainstorm.enabled = 0; // (level 2 is out in the rain: its own wind is another test's)
 	run(2, 10);
 	Check(wind() == 0.0f && fire() == 0.0f, "no storm here: no wind, no fire");
 	run(105, 120);
@@ -1674,9 +2013,9 @@ void TestStormSounds() {
 	run(105, 150); // the storm builds: 8 seconds to full
 	g_requestCount = 0;
 	g_totalBursts  = 0;
-	g_burstNext    = 0;
+	g_storms[kStormAsh].burstNext    = 0;
 	run(105, 1);
-	Check(g_totalBursts.load() == 0 && g_burstNext == now + 20000, "out in the ash: the first is put on the clock, not played at once");
+	Check(g_totalBursts.load() == 0 && g_storms[kStormAsh].burstNext == now + 20000, "out in the ash: the first is put on the clock, not played at once");
 	run(105, 199);
 	Check(g_totalBursts.load() == 0, "...nothing before its time");
 	run(105, 1);
@@ -1688,13 +2027,49 @@ void TestStormSounds() {
 	Check(g_totalBursts.load() == 4 && g_requestCount == 3, "...and one every interval after that (3 more in a minute at 20 s)");
 	g_requestCount = 0;
 	run(103, 600);
-	Check(g_totalBursts.load() == 4 && g_burstNext == 0, "none in the Pandemonium Fortress");
+	Check(g_totalBursts.load() == 4 && g_storms[kStormAsh].burstNext == 0, "none in the Pandemonium Fortress");
 	g_config.burstVolume = 0;
 	run(105, 1200);
 	Check(g_totalBursts.load() == 4 && g_requestCount == 0, "volume 0: none at all");
 
+	// the blizzard: the whole wind, the mountain's howl under it, hard gusts now and then
+	{
+		char blizzardTable[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\r\n105\t\t\t0\t0\t0\t1\t0\r\n109\t\t\t2\t1\t0\t0\t2\r\n110\t\t\t2\t0\t0\t0\t1\r\n";
+		ParseLevels(blizzardTable);
+		g_config      = Config {};
+		g_modBlizzard = 1;
+		for (Clip& clip : g_gust) {
+			clip = Clip { one, 8, kMixRate };
+		}
+		const auto howl = [] { return g_beds[kBedHowl].gain.load(); };
+		run(110, 150);
+		Check(Near(wind(), 1.2f) && Near(howl(), 0.7f) && fire() == 0.0f, "out in the blizzard: wind and the mountain's howl at their own volumes (120% and 70% as shipped), no fire");
+		Check(g_beds[kBedWind].lowPass.load() == 0, "...the whole wind, whistle and all");
+		run(105, 150);
+		Check(Near(fire(), 0.7f) && howl() == 0.0f && g_beds[kBedWind].lowPass.load() == 100, "in the ash storm: fire and no howl, and the ash storm's bass wind");
+		run(109, 150);
+		Check(Near(wind(), 0.36f) && Near(howl(), 0.21f), "in Harrogath both are muffled");
+		g_config.gustMinInterval = g_config.gustMaxInterval = 10;
+		run(110, 150);
+		g_requestCount = 0;
+		g_totalBursts  = 0;
+		run(110, 1);
+		run(110, 300);
+		Check(g_totalBursts.load() == 3 && g_requestCount == 3 && g_requests[0].clip >= g_gust && g_requests[0].clip < g_gust + kGustCount, "hard gusts: one every interval, out in the blizzard (3 in 30 s at 10 s)");
+		g_requestCount = 0;
+		run(109, 300);
+		Check(g_totalBursts.load() == 3 && g_storms[kStormBlizzard].burstNext == 0, "none in Harrogath");
+		g_config.howlVolume = 0;
+		run(110, 150);
+		Check(howl() == 0.0f, "howl volume 0: no howl");
+		for (Clip& clip : g_gust) {
+			clip = Clip {};
+		}
+		g_modBlizzard = 0;
+	}
+
 	run(0, 1); // out of the game
-	Check(wind() == 0.0f && fire() == 0.0f, "leaving the game silences both");
+	Check(wind() == 0.0f && fire() == 0.0f && g_beds[kBedHowl].gain.load() == 0.0f, "leaving the game silences them all");
 	CloseHandle(g_mixEvent);
 	g_mixEvent  = nullptr;
 	g_mixThread = nullptr;
@@ -1718,16 +2093,16 @@ void TestServerMeteors() {
 	g_base                    = reinterpret_cast<uintptr_t>(image);
 	g_server                  = ServerFakes {};
 	g_config                  = Config {};
-	g_config.meteorsMin = g_config.meteorsMax = 3;
-	g_config.meteorHits = 0;
+	g_config.meteor.countMin = g_config.meteor.countMax = 3;
+	g_config.meteor.hits = 0;
 	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\r\n2\t\t\t1\t0\t0\t0\r\n103\t\t\t0\t1\t0\t2\r\n105\t\t\t0\t0\t0\t1\r\n";
 	ParseLevels(table);
 	for (ClassList& classes : g_classes) {
 		classes.count = 0; // no phantom rows: the meteors do not need them either
 	}
-	g_meteorRow[3]    = 750;
-	g_meteorHitRow[3] = 751;
-	g_meteorSkill[3]  = 56;
+	g_showers[kShowerMeteor].row[3]    = 750;
+	g_showers[kShowerMeteor].hitRow[3] = 751;
+	g_showers[kShowerMeteor].skill[3]  = 56;
 	static uint8_t game[0x200];
 	memset(game, 0, sizeof(game));
 	game[0x106]    = 3;
@@ -1748,13 +2123,13 @@ void TestServerMeteors() {
 
 	// a volley, out in the ash
 	g_server.level = 105;
-	++g_meteorRequests;
+	++g_showers[kShowerMeteor].requests;
 	run(80);
 	bool plain = g_server.shots.size() == 3, ring = true, apart = true;
 	for (size_t i = 0; i < g_server.shots.size(); ++i) {
 		const ServerShot& shot = g_server.shots[i];
 		plain = plain && shot.row == 750 && shot.skill == 56;
-		ring  = ring && distance(shot) >= g_config.meteorMinDistance - 1.5 && distance(shot) <= g_config.meteorMaxDistance + 0.5;
+		ring  = ring && distance(shot) >= g_config.meteor.minDistance - 1.5 && distance(shot) <= g_config.meteor.maxDistance + 0.5;
 		apart = apart && (i == 0 || (shot.frame - g_server.shots[i - 1].frame >= 1 && shot.frame - g_server.shots[i - 1].frame <= 6));
 	}
 	Check(plain && g_server.sent == 3, "a volley drops its meteors (3) as the meteor row, with Meteor as their skill");
@@ -1764,40 +2139,40 @@ void TestServerMeteors() {
 
 	// the gap inside a volley is a setting
 	g_server.shots.clear();
-	g_config.meteorGapMin = g_config.meteorGapMax = 400;
-	++g_meteorRequests;
+	g_config.meteor.gapMin = g_config.meteor.gapMax = 400;
+	++g_showers[kShowerMeteor].requests;
 	run(80);
 	Check(g_server.shots.size() == 3 && g_server.shots[1].frame - g_server.shots[0].frame == 10 && g_server.shots[2].frame - g_server.shots[1].frame == 10,
 		"a gap of 400 ms: the meteors are 10 game frames apart");
 	g_server.shots.clear();
-	g_config.meteorGapMin = g_config.meteorGapMax = 0;
-	++g_meteorRequests;
+	g_config.meteor.gapMin = g_config.meteor.gapMax = 0;
+	++g_showers[kShowerMeteor].requests;
 	run(80);
 	Check(g_server.shots.size() == 3 && g_server.shots[2].frame == g_server.shots[0].frame, "a gap of 0: the whole volley falls together");
-	g_config.meteorGapMin = 40;
-	g_config.meteorGapMax = 240;
+	g_config.meteor.gapMin = 40;
+	g_config.meteor.gapMax = 240;
 
 	// where they fall
 	g_server.shots.clear();
 	g_server.level = 103;
-	++g_meteorRequests;
+	++g_showers[kShowerMeteor].requests;
 	run(80);
 	g_server.level = 2;
-	++g_meteorRequests;
+	++g_showers[kShowerMeteor].requests;
 	run(80);
 	Check(g_server.shots.empty(), "no meteors in the Pandemonium Fortress, or outside the ash");
-	g_forceMeteor = true;
+	g_showers[kShowerMeteor].force = true;
 	run(80);
 	Check(g_server.shots.size() == 3, "horror meteor drops a volley anywhere outside town");
 
 	// an aimed one: its marker under the player, a burn if they are still there when it lands
 	g_server.shots.clear();
 	g_server.level             = 105;
-	g_config.meteorHits        = 1;
-	g_config.meteorHitChance   = 100;
-	g_config.meteorHitDamage   = 5;
-	g_config.meteorHitDamageMax = 10;
-	++g_meteorRequests;
+	g_config.meteor.hits        = 1;
+	g_config.meteor.hitChance   = 100;
+	g_config.meteor.damageMin   = 5;
+	g_config.meteor.damageMax = 10;
+	++g_showers[kShowerMeteor].requests;
 	run(30);
 	Check(!g_server.shots.empty() && g_server.shots[0].row == 751 && distance(g_server.shots[0]) <= 1.5, "an aimed meteor: the volley's first is the marker row, on the player's spot");
 	Check(g_server.lifeSets == 0, "...and nothing happens to the player while it falls");
@@ -1808,7 +2183,7 @@ void TestServerMeteors() {
 	g_server.shots.clear();
 	g_server.life     = 100 * 256;
 	g_server.lifeSets = 0;
-	++g_meteorRequests;
+	++g_showers[kShowerMeteor].requests;
 	run(10);
 	g_server.position[0] += 20; // stepped out of the marker
 	run(90);
@@ -1816,16 +2191,16 @@ void TestServerMeteors() {
 
 	g_server.position[0]        = 5000;
 	g_server.life               = 300; // just over 1 life
-	g_config.meteorHitDamage    = 100;
-	g_config.meteorHitDamageMax = 100;
-	++g_meteorRequests;
+	g_config.meteor.damageMin    = 100;
+	g_config.meteor.damageMax = 100;
+	++g_showers[kShowerMeteor].requests;
 	run(100);
 	Check(g_server.life == 256, "an aimed meteor never kills: 1 life is left");
 
-	g_config.meteorHits = 0;
+	g_config.meteor.hits = 0;
 	g_server.shots.clear();
 	g_server.lifeSets = 0;
-	++g_meteorRequests;
+	++g_showers[kShowerMeteor].requests;
 	run(100);
 	bool anyMarker = false;
 	for (const ServerShot& shot : g_server.shots) {
@@ -1833,14 +2208,14 @@ void TestServerMeteors() {
 	}
 	Check(g_server.shots.size() == 3 && !anyMarker && g_server.lifeSets == 0, "aimed meteors switched off: no markers, no burns");
 
-	g_meteorRow[3] = -1;
+	g_showers[kShowerMeteor].row[3] = -1;
 	g_server.shots.clear();
-	++g_meteorRequests;
+	++g_showers[kShowerMeteor].requests;
 	run(60);
 	Check(g_server.shots.empty(), "a mod without the meteor rows: none fall");
 
-	g_meteorRow[3]    = -1;
-	g_meteorHitRow[3] = -1;
+	g_showers[kShowerMeteor].row[3]    = -1;
+	g_showers[kShowerMeteor].hitRow[3] = -1;
 	g_config          = Config {};
 	g_base            = savedBase;
 	g_game            = nullptr;
@@ -1853,7 +2228,7 @@ void TestMeteorClock() {
 	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\r\n2\t\t\t1\t0\t0\t0\r\n103\t\t\t0\t1\t0\t2\r\n105\t\t\t0\t0\t0\t1\r\n";
 	ParseLevels(table);
 	g_config                   = Config {};
-	g_config.meteorMinInterval = g_config.meteorMaxInterval = 10;
+	g_config.meteor.minInterval = g_config.meteor.maxInterval = 10;
 	g_skyReady                 = true;
 	g_modAshstorm              = 1;
 	uint64_t   now             = 9000000;
@@ -1861,25 +2236,503 @@ void TestMeteorClock() {
 		for (int i = 0; i < seconds10; ++i) {
 			now += 100;
 			UpdateStorms(now, level);
-			UpdateMeteors(now, level);
+			UpdateShowers(now, level);
 		}
 	};
-	const uint32_t before = g_meteorRequests.load();
+	const uint32_t before = g_showers[kShowerMeteor].requests.load();
 	run(105, 30); // 3 s: the storm (never-ending by default) is still rolling in
-	Check(g_meteorRequests.load() == before, "no meteors while the storm is still building");
+	Check(g_showers[kShowerMeteor].requests.load() == before, "no meteors while the storm is still building");
 	run(105, 60);
-	Check(g_storms[kStormAsh].state.level == 1.0f && g_meteorRequests.load() == before, "at its height the first volley is put on the clock, not dropped at once");
+	Check(g_storms[kStormAsh].state.level == 1.0f && g_showers[kShowerMeteor].requests.load() == before, "at its height the first volley is put on the clock, not dropped at once");
 	run(105, 320);
-	Check(g_meteorRequests.load() == before + 3, "then a volley is asked for every interval (3 in 32 seconds at 10 s apart)");
+	Check(g_showers[kShowerMeteor].requests.load() == before + 3, "then a volley is asked for every interval (3 in 32 seconds at 10 s apart)");
 	run(103, 150);
 	run(2, 150);
-	Check(g_meteorRequests.load() == before + 3, "none in the fortress or in another act");
-	g_config.meteors = 0;
+	Check(g_showers[kShowerMeteor].requests.load() == before + 3, "none in the fortress or in another act");
+	g_config.meteor.on = 0;
 	run(105, 400);
-	Check(g_meteorRequests.load() == before + 3, "meteors switched off: none");
+	Check(g_showers[kShowerMeteor].requests.load() == before + 3, "meteors switched off: none");
 	run(-1, 1);
 	g_config   = Config {};
 	g_skyReady = false;
+}
+
+// ---- the sandstorm's dust devils ----
+void TestServerDevils() {
+	printf("-- server tick: dust devils\n");
+	uint8_t* image = ServerImage();
+	if (image == nullptr) {
+		Check(false, "memory for the stand-in game");
+		return;
+	}
+	const uintptr_t savedBase = g_base;
+	g_base                    = reinterpret_cast<uintptr_t>(image);
+	g_server                  = ServerFakes {};
+	g_config                  = Config {};
+	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\r\n2\t\t\t1\t0\t0\r\n40\t\t\t0\t1\t3\r\n41\t\t\t3\t0\t0\r\n";
+	ParseLevels(table);
+	for (ClassList& classes : g_classes) {
+		classes.count = 0;
+	}
+	Check(g_config.devil.countMin == 4 && g_config.devil.countMax == 8, "as shipped, four to eight dust devils stand up together");
+	g_config.devil.damage = 3;
+	g_config.devil.speed    = 0; // standing ones first
+	g_config.devil.countMin = g_config.devil.countMax = 4;
+	static uint8_t game[0x200];
+	memset(game, 0, sizeof(game));
+	game[0x106]    = 3;
+	uint32_t frame = 100;
+	const auto run = [&](int frames) {
+		for (int i = 0; i < frames; ++i) {
+			memcpy(game + 0x170, &frame, 4);
+			ServerTick(game);
+			++frame;
+		}
+	};
+	// what was asked of the client side since the last look (and forgets it)
+	struct Asked {
+		float    drift[2];
+		int      effect;
+		int32_t  x, y;
+		uint32_t holdMs;
+		float    scale;
+		uint64_t at;
+	};
+	const auto asked = [] {
+		std::vector<Asked> list;
+		for (Impact& impact : g_impacts) {
+			if (impact.state.load() == kImpactAsked) {
+				if (impact.list == kDevilEffects) {
+					list.push_back({ { impact.drift[0], impact.drift[1] }, impact.effect, impact.spot[0], impact.spot[1], impact.holdMs, impact.scale, impact.at });
+				}
+				impact.state = kImpactFree;
+				--g_impactsBusy;
+			}
+		}
+		return list;
+	};
+	const auto home = [] {
+		g_server.position[0] = 5000;
+		g_server.position[1] = 5000;
+		g_server.life        = 100 * 256;
+		g_server.lifeSets    = 0;
+	};
+	g_game = nullptr;
+	run(1);
+	asked();
+
+	// a group of them
+	g_server.level = 41;
+	++g_devilRequests;
+	uint64_t clock = GetTickCount64();
+	run(2);
+	std::vector<Asked> list = asked();
+	bool right = list.size() == 4;
+	bool apart = false;
+	for (const Asked& one : list) {
+		const double dx = one.x - 5000, dy = one.y - 5000, away = std::sqrt(dx * dx + dy * dy);
+		right = right && one.effect == 1 && one.holdMs == 6000 && one.scale == 1.0f && one.at < clock + 500 && away > 4.1 && away < 18.5 && one.drift[0] == 0.0f && one.drift[1] == 0.0f;
+		apart = apart || one.x != list[0].x || one.y != list[0].y;
+	}
+	Check(right && apart && g_devilCount == 4, "dust devils out in the sandstorm: four Tornados at once, each somewhere of its own 6-18 tiles from the player, up for six seconds");
+	run(300);
+	Check(g_server.shots.empty() && g_server.lifeSets == 0 && g_devilCount == 0 && asked().empty(), "none stands up on the player: one who stays put is not drained, and after six seconds they are gone");
+
+	// any of them drains a player who is in it
+	g_config.devil.countMin = g_config.devil.countMax = 1;
+	++g_devilRequests;
+	run(1);
+	list = asked();
+	run(10);
+	Check(list.size() == 1 && g_server.lifeSets == 0, "one alone, and nothing happens to a player who keeps away");
+	if (list.size() == 1) {
+		g_server.position[0] = list[0].x;
+		g_server.position[1] = list[0].y;
+	}
+	run(14);
+	Check(g_server.lifeSets == 0, "...nor in its first second to one who walks into it");
+	run(1);
+	Check(g_server.lifeSets == 1 && g_server.life == 97 * 256, "a player inside a dust devil is drained 3% of maximum life");
+	run(300);
+	Check(g_server.lifeSets == 5 && g_server.life == 85 * 256 && g_devilCount == 0, "...and again every second while it stands, then it is over");
+
+	home();
+	g_server.life = 300; // just over 1 life
+	++g_devilRequests;
+	run(1);
+	list = asked();
+	if (list.size() == 1) {
+		g_server.position[0] = list[0].x;
+		g_server.position[1] = list[0].y;
+	}
+	run(300);
+	Check(g_server.life == 256, "a dust devil never kills: 1 life is left");
+
+	home();
+	g_config.devil.damage = 0;
+	++g_devilRequests;
+	run(1);
+	list = asked();
+	if (list.size() == 1) {
+		g_server.position[0] = list[0].x;
+		g_server.position[1] = list[0].y;
+	}
+	run(300);
+	Check(list.size() == 1 && g_server.lifeSets == 0, "damage 0: they stand up all the same and drain nothing");
+	g_config.devil.damage = 3;
+
+	// they drift: the whirlwind wanders off at a tile and a half a second, and the drain goes with it
+	home();
+	g_config.devil.speed = 15;
+	++g_devilRequests;
+	run(1);
+	list = asked();
+	float drift[2] = { 0.0f, 0.0f };
+	if (list.size() == 1) {
+		drift[0]             = list[0].drift[0];
+		drift[1]             = list[0].drift[1];
+		g_server.position[0] = list[0].x;
+		g_server.position[1] = list[0].y;
+	}
+	// (as the renderer counts: two units to one of the game's places, so 3 a second)
+	Check(list.size() == 1 && Near(std::sqrt(drift[0] * drift[0] + drift[1] * drift[1]), 3.0f), "a drifting dust devil is asked for with a drift of 1.5 tiles a second");
+	{
+		Impact up {};
+		up.position[0] = 100.0f;
+		up.position[1] = 1.0f;
+		up.position[2] = 200.0f;
+		up.drift[0]    = drift[0];
+		up.drift[1]    = drift[1];
+		up.upAt        = 5000;
+		float xyz[3]   = {};
+		ImpactPlace(up, 7000, xyz);
+		Check(Near(xyz[0], 100.0f + 2.0f * drift[0]) && xyz[1] == 1.0f && Near(xyz[2], 200.0f + 2.0f * drift[1]), "...which after two seconds has carried it 3 tiles, at the same height");
+	}
+	run(300);
+	Check(g_server.lifeSets == 2 && g_server.life == 94 * 256, "a player who stays where it stood up is drained for two seconds (reach 4 tiles), then it has drifted off them");
+	home();
+	++g_devilRequests;
+	run(1);
+	list = asked();
+	run(60);
+	if (list.size() == 1) { // into its path: where it is three seconds after it stood up
+		g_server.position[0] = list[0].x + static_cast<int32_t>(std::lround(list[0].drift[0] / 2.0f * 3.0f));
+		g_server.position[1] = list[0].y + static_cast<int32_t>(std::lround(list[0].drift[1] / 2.0f * 3.0f));
+	}
+	run(20);
+	Check(g_server.lifeSets == 1, "...and one who walks into where it has drifted to is drained there");
+	run(300);
+	asked();
+	g_config.devil.speed = 0;
+
+	// none stands up nearer than its reach
+	g_config.devil.minDistance = 2;
+	g_config.devil.maxDistance = 4;
+	g_config.devil.reach       = 10;
+	NormalizeConfig();
+	Check(g_config.devil.minDistance == 11 && g_config.devil.maxDistance == 11, "the nearest a dust devil stands up is kept outside its reach");
+	g_config.devil.minDistance = 6;
+	g_config.devil.maxDistance = 18;
+	g_config.devil.reach       = 4;
+
+	// only out in the sand
+	home();
+	for (const int level : { 40, 2 }) {
+		g_server.level = level;
+		++g_devilRequests;
+		run(300);
+	}
+	Check(asked().empty() && g_server.lifeSets == 0 && g_devilCount == 0, "none in Lut Gholein, or in another act");
+	g_config.devil.countMin = g_config.devil.countMax = 3;
+	g_devilForce = 1; // "horror devil now"
+	run(1);
+	Check(asked().size() == 3 && g_devilCount == 3, "horror devil now: a group stands up around the player wherever they are outside town");
+	g_server.level = 40;
+	g_devilForce   = 1;
+	run(300);
+	Check(asked().empty(), "...but not in town");
+
+	// a new game: the old one's are gone with it
+	g_server.level = 41;
+	++g_devilRequests;
+	run(1);
+	asked();
+	frame = 10;
+	run(1);
+	Check(g_devilCount == 0, "the dust devils of the last game do not carry on in a new one");
+
+	g_config = Config {};
+	g_base   = savedBase;
+	g_game   = nullptr;
+	g_server.shots.clear();
+	VirtualFree(image, 0, MEM_RELEASE);
+}
+
+void TestDevilClock() {
+	printf("-- dust devil clock\n");
+	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\r\n2\t\t\t1\t0\t0\r\n40\t\t\t0\t1\t3\r\n41\t\t\t3\t0\t0\r\n";
+	ParseLevels(table);
+	g_config                   = Config {};
+	g_config.devil.minInterval = g_config.devil.maxInterval = 10;
+	g_skyReady                 = true;
+	g_modSandstorm             = 1;
+	uint64_t   now             = 12000000;
+	const auto run             = [&](int level, int seconds10) {
+		for (int i = 0; i < seconds10; ++i) {
+			now += 100;
+			UpdateStorms(now, level);
+			UpdateDevils(now, level);
+		}
+	};
+	const uint32_t before = g_devilRequests.load();
+	run(41, 30); // 3 s: the storm (never-ending by default) is still rolling in
+	Check(g_devilRequests.load() == before, "no dust devils while the sandstorm is still building");
+	run(41, 60);
+	Check(g_storms[kStormSand].state.level == 1.0f && g_devilRequests.load() == before, "at its height the first is put on the clock, not raised at once");
+	run(41, 320);
+	Check(g_devilRequests.load() == before + 3, "then a group is asked for every interval (3 in 32 seconds at 10 s apart)");
+	run(2, 300);
+	Check(g_devilRequests.load() == before + 3, "none in another act");
+	g_config.devil.on = 0;
+	run(41, 400);
+	Check(g_devilRequests.load() == before + 3, "dust devils switched off: none");
+	run(-1, 1);
+	g_config       = Config {};
+	g_skyReady     = false;
+	g_modSandstorm = 0;
+}
+
+// ---- the blizzard's ice ----
+void TestServerIce() {
+	printf("-- server tick: ice\n");
+	uint8_t* image = ServerImage();
+	if (image == nullptr) {
+		Check(false, "memory for the stand-in game");
+		return;
+	}
+	const uintptr_t savedBase = g_base;
+	g_base                    = reinterpret_cast<uintptr_t>(image);
+	g_server                  = ServerFakes {};
+	g_config                  = Config {};
+	g_config.ice.countMin = g_config.ice.countMax = 4;
+	g_config.ice.hits     = 0;
+	g_config.meteor.countMin = g_config.meteor.countMax = 4;
+	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\r\n105\t\t\t0\t0\t0\t1\t0\r\n109\t\t\t2\t1\t0\t0\t2\r\n110\t\t\t2\t0\t0\t0\t1\r\n";
+	ParseLevels(table);
+	for (ClassList& classes : g_classes) {
+		classes.count = 0;
+	}
+	Shower& ice    = g_showers[kShowerIce];
+	Shower& meteor = g_showers[kShowerMeteor];
+	ice.row[3]       = 760;
+	ice.hitRow[3]    = 761;
+	ice.skill[3]     = 56;
+	meteor.row[3]    = 750;
+	meteor.hitRow[3] = 751;
+	static uint8_t game[0x200];
+	memset(game, 0, sizeof(game));
+	game[0x106]    = 3;
+	uint32_t frame = 100;
+	const auto run = [&](int frames) {
+		for (int i = 0; i < frames; ++i) {
+			memcpy(game + 0x170, &frame, 4);
+			ServerTick(game);
+			++frame;
+		}
+	};
+	g_game = nullptr;
+	run(1);
+
+	g_server.level = 110;
+	++ice.requests;
+	run(80);
+	bool rows = g_server.shots.size() == 4;
+	for (const ServerShot& shot : g_server.shots) {
+		rows = rows && shot.row == 760;
+	}
+	Check(rows && g_server.lifeSets == 0, "a volley of ice on Act 5's snowfields: its shards (4) as the ice row, and nobody is hurt");
+	// what shows where each lands is asked of the client side: the Blizzard's impact, at the shard's place, when it lands
+	{
+		int  asked = 0;
+		bool right = true;
+		const uint64_t clock = GetTickCount64();
+		for (const Impact& impact : g_impacts) {
+			if (impact.state.load() != kImpactAsked) {
+				continue;
+			}
+			bool placed = false;
+			for (const ServerShot& shot : g_server.shots) {
+				placed = placed || (shot.x == impact.spot[0] && shot.y == impact.spot[1]);
+			}
+			right = right && placed && impact.effect == 1 && impact.player[0] == 5000 && impact.player[1] == 5000 && impact.at > clock && impact.at <= clock + kShowerLandMs;
+			++asked;
+		}
+		Check(asked == 4 && right && g_impactsBusy.load() == 4, "an impact is asked for where each shard lands, for when it lands: the Blizzard's own");
+		// the client side: the place in the renderer's world (two units to one of the game's), then played when the time comes
+		const uintptr_t savedWeather = g_weatherObject;
+		const bool      savedReady   = g_fieldReady;
+		g_weatherObject = 0;
+		UpdateImpacts(clock, 110);
+		bool placed = true;
+		int  waiting = 0;
+		for (const Impact& impact : g_impacts) {
+			if (impact.state.load() == kImpactWaiting) {
+				++waiting;
+				placed = placed && impact.position[0] == 2.0f * static_cast<float>(impact.spot[0]) && impact.position[2] == 2.0f * static_cast<float>(impact.spot[1]);
+			}
+		}
+		Check(waiting == 4 && placed, "each waits for its time, placed in the renderer's world");
+		g_fieldReady = false;
+		UpdateImpacts(clock + kShowerLandMs + 1, 110);
+		Check(g_impactsBusy.load() == 0, "with the game's effect code not as expected nothing is played and nothing is left waiting");
+		g_config.ice.impact  = 0;
+		g_config.ice.impact2 = 0;
+		ice.force            = true;
+		g_server.shots.clear();
+		run(80);
+		Check(g_server.shots.size() == 4 && g_impactsBusy.load() == 0, "impacts switched off: the ice still falls, nothing is asked for");
+		g_impactTest = 3;
+		run(1);
+		int shown = 0;
+		for (Impact& impact : g_impacts) {
+			if (impact.state.load() == kImpactAsked) {
+				shown += impact.effect == 3 && impact.spot[0] == 5002 && impact.spot[1] == 5002 ? 1 : 100;
+				impact.state = kImpactFree;
+				--g_impactsBusy;
+			}
+		}
+		Check(shown == 1, "horror impact show 3: that effect, a step in front of the player, now");
+		// the dust devil preview: show = put up once and removed after five seconds, again = played every 600 ms
+		const auto devilAsked = [&](int effect, int* held, float* scale) {
+			int count = 0;
+			*held     = 0;
+			for (Impact& impact : g_impacts) {
+				if (impact.state.load() == kImpactAsked) {
+					count += impact.list == kDevilEffects && impact.effect == effect && impact.spot[0] == 5005 && impact.spot[1] == 5005 ? 1 : 100;
+					*held += impact.holdMs == 5000 ? 1 : 0;
+					*scale = impact.scale;
+					impact.state = kImpactFree;
+					--g_impactsBusy;
+				}
+			}
+			return count;
+		};
+		int   held  = 0;
+		float scale = 0.0f;
+		g_devilShow = 1;
+		run(1);
+		Check(devilAsked(1, &held, &scale) == 1 && held == 1 && scale == 1.0f, "horror devil show 1: the Tornado once, to be removed after five seconds");
+		g_devilAgain = 5;
+		run(1);
+		Check(devilAsked(5, &held, &scale) == 9 && held == 0 && scale == 1.0f && kDevilEffectCount == 28, "horror devil again 5: the crack played nine times over five seconds");
+		g_config.ice.impact = 1;
+		g_weatherObject     = savedWeather;
+		g_fieldReady        = savedReady;
+		g_server.shots.clear();
+	}
+	g_server.shots.clear();
+	++meteor.requests;
+	run(80);
+	Check(g_server.shots.empty(), "no meteors on the snowfields");
+	g_server.level = 109;
+	++ice.requests;
+	run(80);
+	g_server.level = 105;
+	++ice.requests;
+	run(80);
+	Check(g_server.shots.empty(), "no ice in Harrogath, or in Act 4");
+	ice.force = true;
+	run(80);
+	Check(g_server.shots.size() == 4 && g_server.shots[0].row == 760, "horror ice drops a volley anywhere outside town");
+
+	g_server.shots.clear();
+	const int meteorHits   = meteor.totalHits.load();
+	g_server.level        = 110;
+	g_config.ice.hits      = 1;
+	g_config.ice.hitChance = 100;
+	g_config.ice.markerLead = 0;
+	++ice.requests;
+	run(30);
+	Check(!g_server.shots.empty() && g_server.shots[0].row == 761, "an aimed shard: the volley's first is the marker row");
+	{
+		int markers = 0;
+		for (const Impact& impact : g_impacts) {
+			if (impact.state.load() == kImpactAsked && impact.effect == 11) {
+				markers += impact.holdMs == 0 && impact.scale == 2.0f && impact.spot[0] == g_server.shots[0].x && impact.spot[1] == g_server.shots[0].y ? 1 : 100;
+			}
+		}
+		Check(markers == 5, "...and its marker is asked for there: cracking ice, at once and again every half second until it lands");
+	}
+	run(60);
+	Check(g_server.lifeSets == 1 && g_server.life >= 90 * 256 && g_server.life <= 95 * 256 && ice.totalHits.load() == 1, "a player still standing there when it lands loses 5-10% of maximum life");
+	Check(meteor.totalHits.load() == meteorHits, "...counted as the ice's, not the meteors'");
+	{
+		// the marker's head start: marked at once where the player stands, the shard dropped there 800 ms (20 frames) later
+		for (Impact& impact : g_impacts) {
+			impact.state = kImpactFree;
+		}
+		g_impactsBusy = 0;
+		g_server.shots.clear();
+		g_server.lifeSets       = 0;
+		g_server.life           = 100 * 256;
+		g_config.ice.markerLead = 800;
+		g_config.ice.countMin = g_config.ice.countMax = 1;
+		++ice.requests;
+		run(10);
+		int markers = 0;
+		for (const Impact& impact : g_impacts) {
+			markers += impact.state.load() == kImpactAsked && impact.effect == 11 && impact.spot[0] == 5000 && impact.spot[1] == 5000 ? 1 : 0;
+		}
+		Check(markers == 7 && g_server.shots.empty(), "a head start for the marker: it is asked for at once on the player's spot, no shard yet");
+		run(15);
+		Check(g_server.shots.size() == 1 && g_server.shots[0].row == 761 && g_server.shots[0].x == 5000 && g_server.shots[0].y == 5000 && g_server.lifeSets == 0,
+			"...the shard is dropped on the marked spot when the head start is over");
+		run(70);
+		Check(g_server.lifeSets == 1, "...and hurts a player still there when it lands");
+	}
+
+	ice.row[3] = ice.hitRow[3] = meteor.row[3] = meteor.hitRow[3] = -1;
+	g_config = Config {};
+	g_base   = savedBase;
+	g_game   = nullptr;
+	VirtualFree(image, 0, MEM_RELEASE);
+}
+
+void TestIceClock() {
+	printf("-- ice clock\n");
+	char table[] = "#mod\talwaysNight=1\tskyFlash=1\tsandstorm=1\tashstorm=1\tblizzard=1\r\n105\t\t\t0\t0\t0\t1\t0\r\n109\t\t\t2\t1\t0\t0\t2\r\n110\t\t\t2\t0\t0\t0\t1\r\n";
+	ParseLevels(table);
+	g_config                 = Config {};
+	g_config.ice.minInterval = g_config.ice.maxInterval = 10;
+	g_skyReady               = true;
+	g_modBlizzard            = 1;
+	g_modAshstorm            = 1;
+	uint64_t   now           = 11000000;
+	const auto run           = [&](int level, int seconds10) {
+		for (int i = 0; i < seconds10; ++i) {
+			now += 100;
+			UpdateStorms(now, level);
+			UpdateShowers(now, level);
+		}
+	};
+	Shower&        ice     = g_showers[kShowerIce];
+	Shower&        meteor  = g_showers[kShowerMeteor];
+	const uint32_t before  = ice.requests.load();
+	const uint32_t meteors = meteor.requests.load();
+	run(110, 30);
+	Check(ice.requests.load() == before, "no ice while the blizzard is still building");
+	run(110, 380);
+	Check(g_storms[kStormBlizzard].state.level == 1.0f && ice.requests.load() == before + 3, "then a volley every interval (3 in about 32 s at 10 s apart)");
+	Check(meteor.requests.load() == meteors, "...and no meteors asked for in the blizzard");
+	run(109, 300);
+	Check(ice.requests.load() == before + 3, "none in Harrogath");
+	g_config.ice.on = 0;
+	run(110, 400);
+	Check(ice.requests.load() == before + 3, "ice switched off: none");
+	run(-1, 1);
+	g_config      = Config {};
+	g_skyReady    = false;
+	g_modBlizzard = 0;
 }
 
 void TestHauntingLength() {
@@ -1980,12 +2833,20 @@ int main(int argc, char** argv) {
 	TestMixer();
 	TestSandstorm();
 	TestAshStorm();
+	TestBlizzard();
+	TestMonsoon();
+	TestRainstorm();
+	TestSettingsMenu();
 	TestStormSounds();
 	TestSky();
 	TestWeather();
 	TestServerBolts();
 	TestServerMeteors();
 	TestMeteorClock();
+	TestServerDevils();
+	TestDevilClock();
+	TestServerIce();
+	TestIceClock();
 	TestHauntingLength();
 	TestEventYield();
 	TestLogThread();

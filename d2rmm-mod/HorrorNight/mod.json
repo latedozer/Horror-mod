@@ -1,8 +1,8 @@
 {
-  "name": "Horrors in the Night",
-  "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with the Horrors in the Night plugin) phantom monsters, lightning and thunder, sandstorms in the Act 2 desert, and ash storms with meteors in Act 4.",
+  "name": "A Darker Atmosphere",
+  "description": "Always night, a much darker world where your light radius matters, permanent rain and snow, and (with A Darker Atmosphere's plugin) phantom monsters, lightning and thunder, sandstorms in the Act 2 desert, ash storms with meteors in Act 4, and blizzards with falling ice in Act 5.",
   "author": "Latedozer",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "config": [
     {
       "id": "darknessEnabled",
@@ -106,14 +106,14 @@
           "id": "alwaysWeather",
           "type": "checkbox",
           "name": "Rain / snow overlay (not needed with the plugin)",
-          "description": "A visual-only rain and snow overlay. The Horrors in the Night plugin now drives the game's real weather instead, so leave this off unless you run without the plugin.",
+          "description": "A visual-only rain and snow overlay. A Darker Atmosphere's plugin now drives the game's real weather instead, so leave this off unless you run without the plugin.",
           "defaultValue": false
         },
         {
           "id": "lightning",
           "type": "section",
-          "name": "Lightning (needs the Horrors in the Night plugin)",
-          "description": "Adds the harmless lightning bolt the plugin drops near you during storms. It lights up the area around it for a moment.",
+          "name": "Lightning (needs A Darker Atmosphere's plugin)",
+          "description": "Adds the harmless lightning bolt the plugin drops near you during storms. It lights up the area around it for a moment. (In Act 5 the blizzard's falling ice takes the lightning's place while Blizzards in Act 5 is on.)",
           "defaultValue": true,
           "defaultExpanded": false,
           "children": [
@@ -166,7 +166,7 @@
     {
       "id": "sandstormEnabled",
       "type": "section",
-      "name": "Sandstorms in Act 2 (needs the Horrors in the Night plugin)",
+      "name": "Sandstorms in Act 2 (needs A Darker Atmosphere's plugin)",
       "description": "Turns the unused daytime lighting of the Act 2 desert into the height of a sandstorm, which the plugin fades in and out. Only with Always night on. Turn this off if you remove the plugin, or daytime in Act 2 will look like a permanent sandstorm.",
       "defaultValue": true,
       "defaultExpanded": false,
@@ -192,7 +192,7 @@
     {
       "id": "ashstormEnabled",
       "type": "section",
-      "name": "Ash storms in Act 4 (needs the Horrors in the Night plugin)",
+      "name": "Ash storms in Act 4 (needs A Darker Atmosphere's plugin)",
       "description": "Turns the unused daytime lighting of Act 4 into the height of a storm of ash and embers, which the plugin fades in and out. Only with Always night on. Turn this off if you remove the plugin, or daytime in Act 4 will look like a permanent ash storm.",
       "defaultValue": true,
       "defaultExpanded": false,
@@ -251,9 +251,114 @@
       ]
     },
     {
+      "id": "blizzardEnabled",
+      "type": "section",
+      "name": "Blizzards in Act 5 (needs A Darker Atmosphere's plugin)",
+      "description": "Turns the unused daytime lighting of Act 5's snowfields into the height of a blizzard, which the plugin fades in and out. In Act 5 this replaces the lightning: falling ice instead of bolts and thunder. Only with Always night on. Turn this off if you remove the plugin, or daytime in Act 5 will look like a permanent blizzard.",
+      "defaultValue": true,
+      "defaultExpanded": false,
+      "children": [
+        {
+          "id": "blizzardThickness",
+          "type": "number",
+          "name": "Blizzard thickness %",
+          "description": "How far the snow closes in at the height of a blizzard.",
+          "defaultValue": 60,
+          "minValue": 10,
+          "maxValue": 100
+        },
+        {
+          "id": "blizzardIce",
+          "type": "checkbox",
+          "name": "Falling ice",
+          "description": "Adds the ice shards the plugin drops around you during a blizzard. Now and then one is aimed at you: step out of its marker before it lands.",
+          "defaultValue": true
+        },
+        {
+          "id": "iceMarker",
+          "type": "select",
+          "name": "Marker of an aimed shard",
+          "description": "What shows on the ground where an aimed shard will land. The Meteor's circle ends in the Meteor's fiery impact.",
+          "defaultValue": "ice",
+          "options": [
+            {
+              "value": "ice",
+              "label": "Ice, shown by the plugin (its ice_marker setting)"
+            },
+            {
+              "value": "meteor",
+              "label": "The Meteor's target circle"
+            },
+            {
+              "value": "crack",
+              "label": "Cracking ice (Cold Fissure's crack, experimental)"
+            }
+          ],
+          "visible": [
+            "value",
+            "blizzardIce"
+          ]
+        },
+        {
+          "id": "blizzardVolumetric",
+          "type": "checkbox",
+          "name": "Volumetric snow (experimental)",
+          "description": "Also switches on the renderer's volumetric fog during a blizzard. The game itself never uses it, so it may do nothing, look wrong or cost frame rate.",
+          "defaultValue": false
+        }
+      ]
+    },
+    {
+      "id": "monsoonEnabled",
+      "type": "section",
+      "name": "Monsoons in Act 3 (needs A Darker Atmosphere's plugin)",
+      "description": "Turns unused lighting of Act 3's jungles, Kurast and Travincal into the height of a monsoon, which the plugin fades in and out. Rain, lightning and thunder carry on. Only with Always night on. Turn this off if you remove the plugin, or daytime in Act 3 will look like a permanent monsoon.",
+      "defaultValue": true,
+      "defaultExpanded": false,
+      "children": [
+        {
+          "id": "monsoonThickness",
+          "type": "number",
+          "name": "Monsoon thickness %",
+          "description": "How far the rain closes in at the height of a monsoon.",
+          "defaultValue": 60,
+          "minValue": 10,
+          "maxValue": 100
+        },
+        {
+          "id": "monsoonVolumetric",
+          "type": "checkbox",
+          "name": "Volumetric mist (experimental)",
+          "description": "Also switches on the renderer's volumetric fog during a monsoon. The game itself never uses it, so it may do nothing, look wrong or cost frame rate.",
+          "defaultValue": false
+        }
+      ]
+    },
+    {
+      "id": "act3Snakes",
+      "type": "select",
+      "name": "Snakes in Act 3",
+      "description": "How often the little snakes of the jungle appear in Act 3's outdoor areas. They are harmless critters. Applies to areas made after Install (a new game).",
+      "defaultValue": "many",
+      "options": [
+        {
+          "value": "vanilla",
+          "label": "As in the game (30% chance)"
+        },
+        {
+          "value": "more",
+          "label": "More (100% chance)"
+        },
+        {
+          "value": "many",
+          "label": "Many (100% chance, in every free critter slot)"
+        }
+      ]
+    },
+    {
       "id": "phantoms",
       "type": "section",
-      "name": "Phantom monsters (needs the Horrors in the Night plugin)",
+      "name": "Phantom monsters (needs A Darker Atmosphere's plugin)",
       "description": "Adds the false-monster rows that the d2rl-horror-night plugin spawns: unkillable, they drain life without killing, and vanish after a random time. Timing and strength are set in the plugin's horror-night.toml.",
       "defaultValue": true,
       "defaultExpanded": false,
